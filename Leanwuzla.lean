@@ -145,7 +145,7 @@ def smtQuery (solverPath : System.FilePath) (problemPath : System.FilePath) (tim
         throwError s!"The external prover produced unexpected output, stdout:\n{stdout}stderr:\n{stderr}"
 
 def bitwuzla (reflectionResult : ReflectionResult) (atomsAssignment : Std.HashMap Nat (Nat × Expr)) :
-    MetaM UnsatProver.Result := do
+    MetaM (Except CounterExample UnsatProver.Result) := do
   let smt := toSMT reflectionResult.bvExpr atomsAssignment
   trace[Meta.Tactic.bv] s!"Encoded as SMT: {smt}"
   let res ←
@@ -161,14 +161,13 @@ def bitwuzla (reflectionResult : ReflectionResult) (atomsAssignment : Std.HashMa
   | .sat .. => throwError "Bitwuzla found a counter example"
   | .unsat => throwError "Bitwuzla thinks it's right but can't trust the wuzla!"
 
-def bvBitwuzla (g : MVarId) : MetaM Result := do
-  let ⟨g?, simpTrace⟩ ← Normalize.bvNormalize g
-  let some g := g? | return ⟨simpTrace, none⟩
+def bvBitwuzla (g : MVarId) : MetaM Unit := do
+  let ⟨g?, _⟩ ← Normalize.bvNormalize g
+  let some g := g? | return ()
   let unsatProver : UnsatProver := fun reflectionResult atomsAssignment => do
     withTraceNode `bv (fun _ => return "Preparing LRAT reflection term") do
       bitwuzla reflectionResult atomsAssignment
-  let lratCert ← closeWithBVReflection g unsatProver
-  return ⟨simpTrace, some lratCert⟩
+  discard <| closeWithBVReflection g unsatProver
 
 
 @[tactic bvBitwuzla]
