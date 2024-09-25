@@ -5,7 +5,7 @@ Authors: Henrik Böving
 -/
 import Lean.Elab.Tactic.BVDecide.Frontend.BVDecide
 
-syntax (name := bvBitwuzla) "bv_bitwuzla" : tactic
+syntax (name := bvBitwuzla) "bv_bitwuzla" str : tactic
 
 namespace Lean.Elab.Tactic.BVDecide
 namespace Frontend
@@ -144,7 +144,8 @@ def smtQuery (solverPath : System.FilePath) (problemPath : System.FilePath) (tim
       else
         throwError s!"The external prover produced unexpected output, stdout:\n{stdout}stderr:\n{stderr}"
 
-def bitwuzla (reflectionResult : ReflectionResult) (atomsAssignment : Std.HashMap Nat (Nat × Expr)) :
+def bitwuzla (reflectionResult : ReflectionResult) (atomsAssignment : Std.HashMap Nat (Nat × Expr))
+    (solverPath : System.FilePath) :
     MetaM (Except CounterExample UnsatProver.Result) := do
   let smt := toSMT reflectionResult.bvExpr atomsAssignment
   trace[Meta.Tactic.bv] s!"Encoded as SMT: {smt}"
@@ -154,27 +155,26 @@ def bitwuzla (reflectionResult : ReflectionResult) (atomsAssignment : Std.HashMa
       handle.flush
       withTraceNode `bv (fun _ => return "Proving with bitwuzla") do
         let opts ← getOptions
-        let solver := sat.solver.get opts
         let timeout := sat.timeout.get opts
-        smtQuery solver path timeout
+        smtQuery solverPath path timeout
   match res with
   | .sat .. => throwError "Bitwuzla found a counter example"
   | .unsat => throwError "Bitwuzla thinks it's right but can't trust the wuzla!"
 
-def bvBitwuzla (g : MVarId) : MetaM Unit := do
+def bvBitwuzla (g : MVarId) (solverPath : System.FilePath) : MetaM Unit := do
   let ⟨g?, _⟩ ← Normalize.bvNormalize g
   let some g := g? | return ()
   let unsatProver : UnsatProver := fun reflectionResult atomsAssignment => do
     withTraceNode `bv (fun _ => return "Preparing LRAT reflection term") do
-      bitwuzla reflectionResult atomsAssignment
+      bitwuzla reflectionResult atomsAssignment solverPath
   discard <| closeWithBVReflection g unsatProver
 
 
 @[tactic bvBitwuzla]
 def evalBvBitwuzla : Tactic := fun
-  | `(tactic| bv_bitwuzla) => do
+  | `(tactic| bv_bitwuzla $solverPath:str) => do
     liftMetaFinishingTactic fun g => do
-      discard <| bvBitwuzla g
+      discard <| bvBitwuzla g solverPath.getString
   | _ => throwUnsupportedSyntax
 
 end Frontend
