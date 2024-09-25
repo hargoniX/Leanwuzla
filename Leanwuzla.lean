@@ -5,7 +5,16 @@ Authors: Henrik Böving
 -/
 import Lean.Elab.Tactic.BVDecide.Frontend.BVDecide
 
+/--
+Invoke Bitwuzla on an SMT-fied version of a bitvector goal to see if it holds or not.
+Does not generate a proof term.
+-/
 syntax (name := bvBitwuzla) "bv_bitwuzla" str : tactic
+
+/--
+Compare the performance of `bv_decide` and `bv_bitwuzla`.
+-/
+syntax (name := bvCompare) "bv_compare" str : tactic
 
 namespace Lean.Elab.Tactic.BVDecide
 namespace Frontend
@@ -144,6 +153,10 @@ def smtQuery (solverPath : System.FilePath) (problemPath : System.FilePath) (tim
       else
         throwError s!"The external prover produced unexpected output, stdout:\n{stdout}stderr:\n{stderr}"
 
+
+def bitwuzlaCounterExample : String := "Bitwuzla found a counter example"
+def bitwuzlaSuccess : String := "Bitwuzla thinks it's right but can't trust the wuzla!"
+
 def bitwuzla (reflectionResult : ReflectionResult) (atomsAssignment : Std.HashMap Nat (Nat × Expr))
     (solverPath : System.FilePath) :
     MetaM (Except CounterExample UnsatProver.Result) := do
@@ -158,8 +171,8 @@ def bitwuzla (reflectionResult : ReflectionResult) (atomsAssignment : Std.HashMa
         let timeout := sat.timeout.get opts
         smtQuery solverPath path timeout
   match res with
-  | .sat .. => throwError "Bitwuzla found a counter example"
-  | .unsat => throwError "Bitwuzla thinks it's right but can't trust the wuzla!"
+  | .sat .. => throwError bitwuzlaCounterExample
+  | .unsat => throwError bitwuzlaSuccess
 
 def bvBitwuzla (g : MVarId) (solverPath : System.FilePath) : MetaM Unit := do
   let ⟨g?, _⟩ ← Normalize.bvNormalize g
@@ -175,6 +188,175 @@ def evalBvBitwuzla : Tactic := fun
   | `(tactic| bv_bitwuzla $solverPath:str) => do
     liftMetaFinishingTactic fun g => do
       discard <| bvBitwuzla g solverPath.getString
+  | _ => throwUnsupportedSyntax
+
+structure BitwuzlaPerf where
+  success : Bool
+  overallTime : Float
+
+structure LeansatSuccessTimings where
+  timeRewrite: Float
+  timeBitBlasting : Float
+  timeSatSolving : Float
+  timeLratTrimming : Float
+
+structure LeansatFailureTimings where
+  timeRewrite : Float
+  timeSatSolving : Float
+
+inductive LeansatPerf where
+| success (overallTime : Float) (timings : LeansatSuccessTimings)
+| failure (overallTime : Float) (timings : LeansatFailureTimings)
+
+structure Comparision where
+  bitwuzlaPerf : BitwuzlaPerf
+  leansatPerf : LeansatPerf
+
+def BitwuzlaPerf.toString (perf : BitwuzlaPerf) : String :=
+  if perf.success then
+    s!"Bitwuzla proved the goal after {perf.overallTime}ms"
+  else
+    s!"Bitwuzla provided a counter example after {perf.overallTime}ms"
+
+instance : ToString BitwuzlaPerf where
+  toString := BitwuzlaPerf.toString
+
+def LeansatSuccessTimings.toString (timings : LeansatSuccessTimings) : String :=
+  let { timeRewrite, timeBitBlasting, timeSatSolving, timeLratTrimming } := timings
+  s!"rewriting {timeRewrite}ms, bitblasting {timeBitBlasting}ms, SAT solving {timeSatSolving}ms, LRAT processing {timeLratTrimming}ms"
+
+instance : ToString LeansatSuccessTimings where
+  toString := LeansatSuccessTimings.toString
+
+def LeansatFailureTimings.toString (timings : LeansatFailureTimings) : String :=
+  let { timeRewrite, timeSatSolving } := timings
+  s!"rewriting {timeRewrite} SAT solving {timeSatSolving}ms"
+
+instance : ToString LeansatFailureTimings where
+  toString := LeansatFailureTimings.toString
+
+def LeansatPerf.toString (perf : LeansatPerf) : String :=
+  match perf with
+  | .success overallTime timings =>
+    s!"LeanSAT proved the goal after {overallTime}ms: {timings}"
+  | .failure overallTime timings =>
+    s!"LeanSAT provided a counter example after {overallTime}ms: {timings}"
+
+instance : ToString LeansatPerf where
+  toString := LeansatPerf.toString
+
+def Comparision.toString (comp : Comparision) : String :=
+  comp.bitwuzlaPerf.toString ++ "\n" ++ comp.leansatPerf.toString
+
+instance : ToString Comparision where
+  toString := Comparision.toString
+
+def TraceData.durationMs (data : TraceData) : Float := (data.stopTime - data.startTime) * 1000.0
+
+partial def parseSuccessTrace (traces : PersistentArray TraceElem) : IO LeansatSuccessTimings := do
+  let traces := traces.toArray.map TraceElem.msg
+  let (_, time) ← go traces |>.run {
+    timeRewrite := 0,
+    timeBitBlasting := 0,
+    timeSatSolving := 0,
+    timeLratTrimming := 0,
+  }
+  return time
+where
+  go (msgs : Array MessageData) : StateT LeansatSuccessTimings IO Unit := do
+    for msg in msgs do
+      match msg with
+      | .trace data msg children =>
+        let msg ← msg.toString
+        match msg with
+        | "Normalizing goal" =>
+          modify fun s => { s with timeRewrite := TraceData.durationMs data }
+        | "Bitblasting BVLogicalExpr to AIG" =>
+          modify fun s => { s with timeBitBlasting := TraceData.durationMs data }
+        | "Running SAT solver" =>
+          modify fun s => { s with timeSatSolving := TraceData.durationMs data }
+        | "Obtaining LRAT certificate" =>
+          modify fun s => { s with timeLratTrimming := TraceData.durationMs data }
+        | _ => pure ()
+        go children
+      | .withContext _ msg => go #[msg]
+      | _ => continue
+
+partial def parseFailureTrace (traces : PersistentArray TraceElem) : IO LeansatFailureTimings := do
+  let traces := traces.toArray.map TraceElem.msg
+  let (_, time) ← go traces |>.run { timeRewrite := 0.0, timeSatSolving := 0.0 }
+  return time
+where
+  go (msgs : Array MessageData) : StateT LeansatFailureTimings IO Unit := do
+    for msg in msgs do
+      match msg with
+      | .trace data msg children =>
+        let msg ← msg.toString
+        match msg with
+        | "Normalizing goal" =>
+          modify fun s => { s with timeRewrite := TraceData.durationMs data }
+        | "Running SAT solver" =>
+          modify fun s => { s with timeSatSolving := TraceData.durationMs data }
+        | _ => pure ()
+        go children
+      | .withContext _ msg => go #[msg]
+      | _ => continue
+
+def evalBitwuzla (g : MVarId) (solverPath : System.FilePath) : MetaM BitwuzlaPerf := do
+  let t1 ← IO.monoMsNow
+  try
+    bvBitwuzla g solverPath
+  catch
+    | err@(.error _ msg) =>
+      let t2 ← IO.monoMsNow
+      let overallTime := Float.ofNat <| t2 - t1
+      let msg ← msg.toString
+      if msg == bitwuzlaSuccess then
+        return { success := true, overallTime }
+      else if msg == bitwuzlaCounterExample then
+        return { success := false, overallTime }
+      else
+        throw err
+    | err@(.internal _ _) => throw err
+  return { success := true, overallTime := 0.0 }
+
+def evalLeanSat (g : MVarId) (cfg : TacticContext) : MetaM LeansatPerf := do
+  let t1 ← IO.monoMsNow
+  let result ← bvDecide' g cfg
+  let t2 ← IO.monoMsNow
+  let overallTime := Float.ofNat <| t2 - t1
+
+  let traces ← getTraces
+  match result with
+  | .ok _ =>
+    return .success overallTime (← parseSuccessTrace traces)
+  | .error _ =>
+    return .failure overallTime (← parseFailureTrace traces)
+
+def bvCompare (g : MVarId) (solverPath : System.FilePath) (cfg : TacticContext) :
+    MetaM Comparision := do
+  let setTraceOptions (opt : Options) : Options :=
+    opt
+      |>.setBool `trace.profiler true
+      |>.setBool `trace.Meta.Tactic.bv true
+      |>.setBool `trace.Meta.Tactic.sat true
+  withOptions setTraceOptions do
+    let s ← saveState
+    let bitwuzlaPerf ← evalBitwuzla g solverPath
+    resetTraceState
+    restoreState s
+    let leansatPerf ← evalLeanSat g cfg
+    resetTraceState
+    return { bitwuzlaPerf, leansatPerf }
+
+@[tactic bvCompare]
+def evalBvCompare : Tactic := fun
+  | `(tactic| bv_compare $solverPath:str) => do
+    IO.FS.withTempFile fun _ lratFile => do
+      let cfg ← TacticContext.new lratFile
+      let g ← getMainGoal
+      let res ← bvCompare g solverPath.getString cfg
+      logInfo <| toString res
   | _ => throwUnsupportedSyntax
 
 end Frontend
