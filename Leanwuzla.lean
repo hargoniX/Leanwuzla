@@ -70,10 +70,8 @@ where
       let gateStr :=
         match gate with
         | .and => "and"
-        | .or => "or"
         | .xor => "xor"
         | .beq => "="
-        | .imp => "=>"
       pushBinaryOp gateStr (goBVLogical lhs) (goBVLogical rhs)
 
   goBVPred (pred : BVPred) : StateM String Unit := do
