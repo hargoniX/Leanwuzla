@@ -163,11 +163,12 @@ def smtQuery (solverPath : System.FilePath) (problemPath : System.FilePath) (tim
   let opts ← getOptions
   let verbose := diagnostics.get opts
   let mut args := #[
-    problemPath.toString
+    problemPath.toString,
+    "-v=1"
   ]
 
   if verbose then
-    args := args.push "-v=1"
+    args := args.push "-p"
 
   let out? ← External.runInterruptible timeout { cmd, args, stdin := .piped, stdout := .piped, stderr := .null }
   match out? with
@@ -177,9 +178,13 @@ def smtQuery (solverPath : System.FilePath) (problemPath : System.FilePath) (tim
     if exitCode == 255 then
       throwError s!"Failed to execute external prover:\n{stderr}"
     else
-      if stdout.startsWith "sat" then
+      let stdoutLines := stdout.splitOn "\n"
+      let solvingLine := stdoutLines[stdoutLines.length - 2]!
+      assert! solvingLine.startsWith "solving_context::time_solve:"
+      trace[Meta.Tactic.bv] solvingLine
+      if stdoutLines.contains "sat" then
         return .sat #[]
-      else if stdout.startsWith "unsat" then
+      else if stdoutLines.contains "unsat" then
         return .unsat
       else
         throwError s!"The external prover produced unexpected output, stdout:\n{stdout}stderr:\n{stderr}"
@@ -223,6 +228,7 @@ def evalBvBitwuzla : Tactic := fun
 structure BitwuzlaPerf where
   success : Bool
   overallTime : Float
+  solvingContextTime : Float
 
 structure LeansatSuccessTimings where
   timeRewrite: Float
@@ -245,9 +251,9 @@ structure Comparision where
 
 def BitwuzlaPerf.toString (perf : BitwuzlaPerf) : String :=
   if perf.success then
-    s!"Bitwuzla proved the goal after {perf.overallTime}ms"
+    s!"Bitwuzla proved the goal after {perf.overallTime}ms, solving context: {perf.solvingContextTime}ms"
   else
-    s!"Bitwuzla provided a counter example after {perf.overallTime}ms"
+    s!"Bitwuzla provided a counter example after {perf.overallTime}ms, solving context: {perf.solvingContextTime}ms"
 
 instance : ToString BitwuzlaPerf where
   toString := BitwuzlaPerf.toString
@@ -336,7 +342,7 @@ where
       | .withContext _ msg => go #[msg]
       | _ => continue
 
-def evalBitwuzla (g : MVarId) (solverPath : System.FilePath) : MetaM BitwuzlaPerf := do
+partial def evalBitwuzla (g : MVarId) (solverPath : System.FilePath) : MetaM BitwuzlaPerf := do
   let t1 ← IO.monoMsNow
   try
     bvBitwuzla g solverPath
@@ -346,13 +352,28 @@ def evalBitwuzla (g : MVarId) (solverPath : System.FilePath) : MetaM BitwuzlaPer
       let overallTime := Float.ofNat <| t2 - t1
       let msg ← msg.toString
       if msg == bitwuzlaSuccess then
-        return { success := true, overallTime }
+        let (_, solvingContextTime) ← parseBitwuzlaTrace ((← getTraces).toArray.map TraceElem.msg) |>.run 0
+        return { success := true, overallTime, solvingContextTime }
       else if msg == bitwuzlaCounterExample then
-        return { success := false, overallTime }
+        let (_, solvingContextTime) ← parseBitwuzlaTrace ((← getTraces).toArray.map TraceElem.msg) |>.run 0
+        return { success := false, overallTime, solvingContextTime }
       else
         throw err
     | err@(.internal _ _) => throw err
-  return { success := true, overallTime := 0.0 }
+  unreachable!
+where
+  parseBitwuzlaTrace (msgs : Array MessageData) : StateT Float IO Unit := do
+    for msg in msgs do
+      match msg with
+      | .trace _ msg children =>
+        let msg ← msg.toString
+        let pref := "solving_context::time_solve: "
+        if msg.startsWith pref then
+          let msg := (msg.splitOn " ")[1]!.dropRight 2
+          set <| Float.ofInt msg.toNat!
+        parseBitwuzlaTrace children
+      | .withContext _ msg => parseBitwuzlaTrace #[msg]
+      | _ => continue
 
 def evalLeanSat (g : MVarId) (cfg : TacticContext) : MetaM LeansatPerf := do
   let t1 ← IO.monoMsNow
@@ -376,8 +397,8 @@ def bvCompare (g : MVarId) (solverPath : System.FilePath) (cfg : TacticContext) 
       |>.setBool `trace.Meta.Tactic.sat true
   withOptions setTraceOptions do
     let s ← saveState
-    let bitwuzlaPerf ← evalBitwuzla g solverPath
     resetTraceState
+    let bitwuzlaPerf ← evalBitwuzla g solverPath
     restoreState s
     let leansatPerf ← evalLeanSat g cfg
     resetTraceState
