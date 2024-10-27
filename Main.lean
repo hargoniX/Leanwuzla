@@ -65,7 +65,7 @@ def elabParseAndDecideSmt2File (path : System.FilePath) : CommandElabM Unit := d
 
 def parseOptions (args : List String) : IO (Options × List String) := do
   let (opts, args) := go {} args
-  return (← Lean.Language.Lean.reparseOptions opts, args)
+  return (← Language.Lean.reparseOptions opts, args)
 where
   go (opts : Options) : List String → (Options × List String)
     | "-D" :: arg :: args =>
@@ -79,7 +79,6 @@ where
 unsafe def main (args : List String) : IO Unit := do
   Lean.initSearchPath (← Lean.findSysroot)
   let (opts, args) ← parseOptions args
-  IO.println opts
   let [path] := args
     | throw (.userError "usage: lake exe leanwuzla [-D name=value] /path/to/file.smt2")
   withImportModules #[`Std.Tactic.BVDecide] {} 0 fun env => do
