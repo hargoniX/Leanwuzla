@@ -70,8 +70,8 @@ where
   go (opts : Options) : List String → (Options × List String)
     | "-D" :: arg :: args =>
       if let [name, value] := arg.splitOn "=" then
-          let opts := opts.set name.toName value
-          go opts args
+        let opts := opts.set name.toName value
+        go opts args
       else
         (opts, args)
     | args => (opts, args)
