@@ -63,10 +63,25 @@ open Elab Command in
 def elabParseAndDecideSmt2File (path : System.FilePath) : CommandElabM Unit := do
   runTermElabM fun _ => parseAndDecideSmt2File path
 
+def parseOptions (args : List String) : IO (Options × List String) := do
+  let (opts, args) := go {} args
+  return (← Lean.Language.Lean.reparseOptions opts, args)
+where
+  go (opts : Options) : List String → (Options × List String)
+    | "-D" :: arg :: args =>
+      if let [name, value] := arg.splitOn "=" then
+          let opts := opts.set name.toName value
+          go opts args
+      else
+        (opts, args)
+    | args => (opts, args)
+
 unsafe def main (args : List String) : IO Unit := do
   Lean.initSearchPath (← Lean.findSysroot)
-  let some (path : String) := args[0]?
-    | throw (.userError "usage: lake exe leanwuzla /path/to/file.smt2")
-  withImportModules #[`Std.Tactic.BVDecide] Options.empty 0 fun env => do
+  let (opts, args) ← parseOptions args
+  IO.println opts
+  let [path] := args
+    | throw (.userError "usage: lake exe leanwuzla [-D name=value] /path/to/file.smt2")
+  withImportModules #[`Std.Tactic.BVDecide] {} 0 fun env => do
     _ ← Meta.MetaM.toIO (parseAndDecideSmt2File path)
-      { fileName := "leanwuzla", fileMap := default, options := Options.empty } { env := env }
+      { fileName := "leanwuzla", fileMap := default, options := opts } { env := env }

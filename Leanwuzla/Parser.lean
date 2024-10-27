@@ -152,7 +152,7 @@ where
       have w : Q(Nat) := (← parseTerm x).fst.appArg!
       let (_, (x : Q(BitVec $w))) ← parseTerm x
       let (_, (y : Q(BitVec $w))) ← parseTerm y
-      return (q(BitVec $w), q(BitVec.smtUDiv $x $y))
+      return (q(BitVec $w), q($x / $y))
     | sexp!{(bvurem {x} {y})} =>
       have w : Q(Nat) := (← parseTerm x).fst.appArg!
       let (_, (x : Q(BitVec $w))) ← parseTerm x

@@ -14,11 +14,11 @@ Alternatively to compare `bv_decide` and `bv_bitwuzla` directly run:
 bv_compare "/path/to/bitwuzla"
 ```
 
-## Terminal Frontend
+## SMT-LIB v2 Terminal Frontend
 This provides the ability to call `bv_decide` with QF_BV SMT-LIB v2 problems. You can call it like
 this:
 ```
-lake exe leanwuzla /path/to/file.smt2
+lake exe leanwuzla [-D name=value] /path/to/file.smt2
 ```
 
 ## Quality and Stability
