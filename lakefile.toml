@@ -1,0 +1,10 @@
+name = "leanwuzla"
+version = "0.1.0"
+defaultTargets = ["Leanwuzla"]
+testRunner = "Test"
+
+[[lean_lib]]
+name = "Test"
+
+[[lean_lib]]
+name = "Leanwuzla"
