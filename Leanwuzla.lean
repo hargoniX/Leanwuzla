@@ -9,12 +9,12 @@ import Lean.Elab.Tactic.BVDecide.Frontend.BVDecide
 Invoke Bitwuzla on an SMT-fied version of a bitvector goal to see if it holds or not.
 Does not generate a proof term.
 -/
-syntax (name := bvBitwuzla) "bv_bitwuzla" str : tactic
+syntax (name := bvBitwuzla) "bv_bitwuzla" (str)? : tactic
 
 /--
 Compare the performance of `bv_decide` and `bv_bitwuzla`.
 -/
-syntax (name := bvCompare) "bv_compare" str : tactic
+syntax (name := bvCompare) "bv_compare" (str)? : tactic
 
 namespace Lean.Elab.Tactic.BVDecide
 namespace Frontend
@@ -236,6 +236,9 @@ def evalBvBitwuzla : Tactic := fun
   | `(tactic| bv_bitwuzla $solverPath:str) => do
     liftMetaFinishingTactic fun g => do
       discard <| bvBitwuzla g solverPath.getString
+  | `(tactic| bv_bitwuzla) => do
+    liftMetaFinishingTactic fun g => do
+      discard <| bvBitwuzla g "bitwuzla"
   | _ => throwUnsupportedSyntax
 
 structure BitwuzlaPerf where
@@ -424,6 +427,12 @@ def evalBvCompare : Tactic := fun
       let cfg ← TacticContext.new lratFile
       let g ← getMainGoal
       let res ← bvCompare g solverPath.getString cfg
+      logInfo <| toString res
+  | `(tactic| bv_compare) => do
+    IO.FS.withTempFile fun _ lratFile => do
+      let cfg ← TacticContext.new lratFile
+      let g ← getMainGoal
+      let res ← bvCompare g "bitwuzla" cfg
       logInfo <| toString res
   | _ => throwUnsupportedSyntax
 
