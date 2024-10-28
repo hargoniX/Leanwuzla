@@ -125,15 +125,6 @@ where
       | .xor => pushBinaryOp "bvxor" lhs rhs
       | .add => pushBinaryOp "bvadd" lhs rhs
       | .mul => pushBinaryOp "bvmul" lhs rhs
-      | .sdiv =>
-        let zero := goBVExpr <| .const (w := w) 0
-        withParens do
-          push "ite "
-          pushBinaryOp "=" zero rhs
-          push " "
-          zero
-          push " "
-          pushBinaryOp "bvsdiv" lhs rhs
       | .udiv =>
         let zero := goBVExpr <| .const (w := w) 0
         withParens do
