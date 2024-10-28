@@ -12,7 +12,7 @@ jobs:
     steps:
       - uses: DeterminateSystems/nix-installer-action@main
 
-      - name: install cadical
+      - name: install bitwuzla
         run: nix profile install nixpkgs#bitwuzla
 
       - uses: actions/checkout@v4
