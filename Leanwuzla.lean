@@ -52,6 +52,17 @@ where
       push " "
       rhs
 
+  @[inline]
+  pushIteOp (c e1 e2 : StateM String Unit) : StateM String Unit := do
+    withParens do
+      push s!"ite ("
+      c
+      push " "
+      e1
+      push " "
+      e2
+      push ")"
+
   go (expr : BVLogicalExpr) (atomsAssignment : Std.HashMap Nat (Nat × Expr)) : StateM String Unit := do
     push "(set-logic QF_BV)\n"
     declareConsts atomsAssignment
@@ -72,12 +83,14 @@ where
       | true => push "true"
       | false => push "false"
     | .not expr => pushUnaryOp "not" (goBVLogical expr)
+    | .ite c e1 e2 => pushIteOp (goBVLogical c) (goBVLogical e1) (goBVLogical e2)
     | .gate gate lhs rhs =>
       let gateStr :=
         match gate with
         | .and => "and"
         | .xor => "xor"
         | .beq => "="
+        | .imp => "=>"
       pushBinaryOp gateStr (goBVLogical lhs) (goBVLogical rhs)
 
   goBVPred (pred : BVPred) : StateM String Unit := do
