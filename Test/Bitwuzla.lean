@@ -80,7 +80,7 @@ example : (x ++ x).extractLsb' 0 32 = x := by
 
 /-- error: Bitwuzla thinks it's right but can't trust the wuzla! -/
 #guard_msgs in
-example : a → b = !a || b:= by
+example (h : a = c) : (a → b) = (!c || b) := by
   bv_bitwuzla
 
 /-- error: Bitwuzla thinks it's right but can't trust the wuzla! -/
