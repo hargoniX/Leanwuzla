@@ -55,13 +55,12 @@ where
   @[inline]
   pushIteOp (c e1 e2 : StateM String Unit) : StateM String Unit := do
     withParens do
-      push s!"ite ("
+      push s!"ite "
       c
       push " "
       e1
       push " "
       e2
-      push ")"
 
   go (expr : BVLogicalExpr) (atomsAssignment : Std.HashMap Nat (Nat × Expr)) : StateM String Unit := do
     push "(set-logic QF_BV)\n"
