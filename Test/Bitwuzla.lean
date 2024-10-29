@@ -77,3 +77,13 @@ example : x >>> x = 0 := by
 #guard_msgs in
 example : (x ++ x).extractLsb' 0 32 = x := by
   bv_bitwuzla
+
+/-- error: Bitwuzla thinks it's right but can't trust the wuzla! -/
+#guard_msgs in
+example (h : a = c) : (a → b) = (!c || b) := by
+  bv_bitwuzla
+
+/-- error: Bitwuzla thinks it's right but can't trust the wuzla! -/
+#guard_msgs in
+example : ite a b c = ite (!a) c b := by
+  bv_bitwuzla
