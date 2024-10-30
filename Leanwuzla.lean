@@ -193,10 +193,13 @@ def smtQuery (solverPath : System.FilePath) (problemPath : System.FilePath) (tim
         throwError s!"The external prover produced unexpected output, stdout:\n{stdout}stderr:\n{stderr}"
 
 
+
+axiom bitwuzlaCorrect (expr : BVLogicalExpr) : expr.Unsat
+
 def bitwuzlaCounterExample : String := "Bitwuzla found a counter example"
 def bitwuzlaSuccess : String := "Bitwuzla thinks it's right but can't trust the wuzla!"
 
-def bitwuzla (reflectionResult : ReflectionResult) (atomsAssignment : Std.HashMap Nat (Nat × Expr))
+def bitwuzla (g : MVarId) (reflectionResult : ReflectionResult) (atomsAssignment : Std.HashMap Nat (Nat × Expr))
     (solverPath : System.FilePath) :
     MetaM (Except CounterExample UnsatProver.Result) := do
   let smt := toSMT reflectionResult.bvExpr atomsAssignment
@@ -210,25 +213,31 @@ def bitwuzla (reflectionResult : ReflectionResult) (atomsAssignment : Std.HashMa
         let timeout := sat.timeout.get opts
         smtQuery solverPath path timeout
   match res with
-  | .sat .. => throwError bitwuzlaCounterExample
-  | .unsat => throwError bitwuzlaSuccess
+  | .sat .. => return .error ⟨g, {}, #[]⟩
+  | .unsat => return .ok ⟨mkApp (mkConst ``bitwuzlaCorrect) (toExpr reflectionResult.bvExpr), ""⟩
 
-def bvBitwuzla (g : MVarId) (solverPath : System.FilePath) : MetaM Unit := do
-  let some g ← Normalize.bvNormalize g | return ()
-  let unsatProver : UnsatProver := fun _ reflectionResult atomsAssignment => do
+def bvBitwuzla (g : MVarId) (solverPath : System.FilePath) : MetaM (Except CounterExample Unit) := do
+  let some g ← Normalize.bvNormalize g | return .ok ()
+  let unsatProver : UnsatProver := fun g reflectionResult atomsAssignment => do
     withTraceNode `bv (fun _ => return "Preparing LRAT reflection term") do
-      bitwuzla reflectionResult atomsAssignment solverPath
-  discard <| closeWithBVReflection g unsatProver
+      bitwuzla g reflectionResult atomsAssignment solverPath
+  match ← closeWithBVReflection g unsatProver with
+  | .ok .. => return .ok ()
+  | .error err => return .error err
 
 
 @[tactic bvBitwuzla]
 def evalBvBitwuzla : Tactic := fun
   | `(tactic| bv_bitwuzla $solverPath:str) => do
     liftMetaFinishingTactic fun g => do
-      discard <| bvBitwuzla g solverPath.getString
+      match ← bvBitwuzla g solverPath.getString with
+      | .ok .. => throwError bitwuzlaSuccess
+      | .error .. => throwError bitwuzlaCounterExample
   | `(tactic| bv_bitwuzla) => do
     liftMetaFinishingTactic fun g => do
-      discard <| bvBitwuzla g "bitwuzla"
+      match ← bvBitwuzla g "bitwuzla" with
+      | .ok .. => throwError bitwuzlaSuccess
+      | .error .. => throwError bitwuzlaCounterExample
   | _ => throwUnsupportedSyntax
 
 structure BitwuzlaPerf where
@@ -350,23 +359,11 @@ where
 
 partial def evalBitwuzla (g : MVarId) (solverPath : System.FilePath) : MetaM BitwuzlaPerf := do
   let t1 ← IO.monoMsNow
-  try
-    bvBitwuzla g solverPath
-  catch
-    | err@(.error _ msg) =>
-      let t2 ← IO.monoMsNow
-      let overallTime := Float.ofNat <| t2 - t1
-      let msg ← msg.toString
-      if msg == bitwuzlaSuccess then
-        let (_, solvingContextTime) ← parseBitwuzlaTrace ((← getTraces).toArray.map TraceElem.msg) |>.run 0
-        return { success := true, overallTime, solvingContextTime }
-      else if msg == bitwuzlaCounterExample then
-        let (_, solvingContextTime) ← parseBitwuzlaTrace ((← getTraces).toArray.map TraceElem.msg) |>.run 0
-        return { success := false, overallTime, solvingContextTime }
-      else
-        throw err
-    | err@(.internal _ _) => throw err
-  unreachable!
+  let res ← bvBitwuzla g solverPath
+  let t2 ← IO.monoMsNow
+  let overallTime := Float.ofNat <| t2 - t1
+  let (_, solvingContextTime) ← parseBitwuzlaTrace ((← getTraces).toArray.map TraceElem.msg) |>.run 0
+  return { success := res.isOk, overallTime, solvingContextTime }
 where
   parseBitwuzlaTrace (msgs : Array MessageData) : StateT Float IO Unit := do
     for msg in msgs do
@@ -404,7 +401,8 @@ def bvCompare (g : MVarId) (solverPath : System.FilePath) (cfg : TacticContext) 
   withOptions setTraceOptions do
     let s ← saveState
     resetTraceState
-    let bitwuzlaPerf ← evalBitwuzla g solverPath
+    let g' ← mkFreshExprMVar (← g.getType)
+    let bitwuzlaPerf ← evalBitwuzla g'.mvarId! solverPath
     restoreState s
     let leansatPerf ← evalLeanSat g cfg
     resetTraceState
