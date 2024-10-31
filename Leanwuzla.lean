@@ -358,10 +358,10 @@ where
       | _ => continue
 
 partial def evalBitwuzla (g : MVarId) (solverPath : System.FilePath) : MetaM BitwuzlaPerf := do
-  let t1 ← IO.monoMsNow
+  let t1 ← IO.monoNanosNow
   let res ← bvBitwuzla g solverPath
-  let t2 ← IO.monoMsNow
-  let overallTime := Float.ofNat <| t2 - t1
+  let t2 ← IO.monoNanosNow
+  let overallTime := (Float.ofNat <| t2 - t1) / 1000000.0
   let (_, solvingContextTime) ← parseBitwuzlaTrace ((← getTraces).toArray.map TraceElem.msg) |>.run 0
   return { success := res.isOk, overallTime, solvingContextTime }
 where
@@ -379,10 +379,10 @@ where
       | _ => continue
 
 def evalLeanSat (g : MVarId) (cfg : TacticContext) : MetaM LeansatPerf := do
-  let t1 ← IO.monoMsNow
+  let t1 ← IO.monoNanosNow
   let result ← bvDecide' g cfg
-  let t2 ← IO.monoMsNow
-  let overallTime := Float.ofNat <| t2 - t1
+  let t2 ← IO.monoNanosNow
+  let overallTime := (Float.ofNat <| t2 - t1) / 1000000.0
 
   let traces ← getTraces
   match result with
