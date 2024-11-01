@@ -16,3 +16,6 @@ example : x - 1 ≠ x := by
 
 example : ∀ (x : BitVec 32), x.and 0#32 = 0#32 := by
   bv_compare
+
+example : ∀ (x x_1 : BitVec 16), BitVec.truncate 8 ((x_1.and 255#16).and x) = BitVec.truncate 8 (x_1.and x) := by
+  bv_compare
