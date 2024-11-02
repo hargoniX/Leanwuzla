@@ -1,27 +1,7 @@
+import Leanwuzla.Aux
 import Leanwuzla.Sexp
 
 open Lean
-
-@[bv_normalize] def implies (a b : Bool) : Bool :=
-  !a || b
-
-@[bv_normalize] def BitVec.nand {n : Nat} (x y : BitVec n) : BitVec n :=
-  ~~~(x &&& y)
-
-@[bv_normalize] def BitVec.nor {n : Nat} (x y : BitVec n) : BitVec n :=
-  ~~~(x ||| y)
-
-@[bv_normalize] def BitVec.xnor {n : Nat} (x y : BitVec n) : BitVec n :=
-  ~~~(x ^^^ y)
-
-@[bv_normalize] def BitVec.compare (x y : BitVec n) : BitVec 1 :=
-  bif x == y then 1#1 else 0#1
-
-@[bv_normalize] def BitVec.sgt {n : Nat} (x y : BitVec n) : Bool :=
-  BitVec.slt y x
-
-@[bv_normalize] def BitVec.sge {n : Nat} (x y : BitVec n) : Bool :=
-  BitVec.sle y x
 
 /- Avoids stack-overflow in deeply nested s-expressions. -/
 private def Parser.sexpTopLevelHash : Sexp → UInt64

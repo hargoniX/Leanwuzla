@@ -12,3 +12,4 @@ name = "Leanwuzla"
 [[lean_exe]]
 name = "leanwuzla"
 root = "Main"
+supportInterpreter = true

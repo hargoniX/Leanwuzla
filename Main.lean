@@ -92,6 +92,6 @@ unsafe def main (args : List String) : IO Unit := do
   let (opts, args) ← parseOptions args
   let [path] := args
     | throw (.userError "usage: lake exe leanwuzla [-D name=value] /path/to/file.smt2")
-  withImportModules #[`Std.Tactic.BVDecide] {} 0 fun env => do
+  withImportModules #[`Std.Tactic.BVDecide, `Leanwuzla.Aux] {} 0 fun env => do
     _ ← Meta.MetaM.toIO (parseAndDecideSmt2File path)
       { fileName := "leanwuzla", fileMap := default, options := opts } { env := env }
