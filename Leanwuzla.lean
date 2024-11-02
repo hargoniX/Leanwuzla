@@ -341,8 +341,9 @@ where
           modify fun s => { s with timeSatSolving := TraceData.durationMs data }
         | "Obtaining LRAT certificate" =>
           modify fun s => { s with timeLratTrimming := TraceData.durationMs data }
-        | "Verifying LRAT certificate" =>
-          modify fun s => { s with timeLratChecking := TraceData.durationMs data }
+        | "Verifying LRAT certificate" | "Compiling expr term" | "Compiling proof certificate term"
+          | "Compiling reflection proof term" =>
+          modify fun s => { s with timeLratChecking := s.timeLratChecking + TraceData.durationMs data }
         | _ => pure ()
         go children
       | .withContext _ msg => go #[msg]
