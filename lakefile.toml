@@ -1,6 +1,6 @@
 name = "leanwuzla"
 version = "0.1.0"
-defaultTargets = ["Leanwuzla"]
+defaultTargets = ["Leanwuzla", "leanwuzla"]
 testRunner = "Test"
 
 [[lean_lib]]
@@ -8,3 +8,7 @@ name = "Test"
 
 [[lean_lib]]
 name = "Leanwuzla"
+
+[[lean_exe]]
+name = "leanwuzla"
+root = "Main"

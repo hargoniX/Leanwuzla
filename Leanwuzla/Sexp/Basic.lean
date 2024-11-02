@@ -6,6 +6,8 @@ Authors: Wojciech Nawrocki
 Source: https://github.com/ufmg-smite/lean-smt/blob/main/Smt/Data/Sexp.lean
 -/
 
+import Std.Internal.Parsec.String
+
 /-- The type of S-expressions. -/
 inductive Sexp where
   | atom : String → Sexp
@@ -16,6 +18,14 @@ class ToSexp (α : Type u) where
   toSexp : α → Sexp
 
 namespace Sexp
+
+def isAtom : Sexp → Bool
+  | atom _ => true
+  | _      => false
+
+def isExpr : Sexp → Bool
+  | expr _ => true
+  | _      => false
 
 partial def serialize : Sexp → String
   | atom s  => s
@@ -59,55 +69,64 @@ where go (stk : Array Substring) (s : Substring) :=
         let s1 := ⟨s.str, s.startPos, s.next s1.stopPos⟩
         let s2 := ⟨s.str, s1.stopPos, s.stopPos⟩
         go (stk.push s1) s2
+    else if c == ';' then
+      go stk (s.dropWhile (· ≠ '\n'))
     else if c == ')' || c == '(' then
       go (stk.push <| s.take 1) (s.drop 1)
     else if c.isWhitespace then
       go stk (s.drop 1)
     else
       let tk := s.takeWhile fun c =>
-        !c.isWhitespace && c != '(' && c != ')' && c != '|' && c != '"'
+        !c.isWhitespace && c != '(' && c != ')' && c != '|' && c != '"' && c != ';'
       -- assertion: tk.bsize > 0 as otherwise we would have gone into one of the branches above
       go (stk.push tk) (s.extract ⟨tk.bsize⟩ ⟨s.bsize⟩)
 
-mutual
-partial def parseOneAux : List Substring → Except ParseError (Sexp × List Substring)
-  | tk :: tks => do
-    if tk.front == ')' then
-      throw <| .malformed "unexpected ')'"
+def parseManyAux (tks : Array Substring) : Except ParseError (List Sexp) := do
+  let mut stack : List (List Sexp) := []
+  let mut curr := []
+  for tk in tks do
     if tk.front == '(' then
-      if let (ss, _tk :: tks) ← parseManyAux tks then
-        -- assertion: _tk == ')' since parseManyAux only stops on ')'
-        return (expr ss.toList, tks)
-      else
-        throw <| .incomplete "expected ')'"
+      stack := curr :: stack
+      curr := []
+    else if tk.front == ')' then
+      match stack with
+      | [] => throw <| .malformed "unexpected ')'"
+      | sexp :: sexps =>
+        curr := expr curr.reverse :: sexp
+        stack := sexps
     else
-      return (atom tk.toString, tks)
-  | [] => throw <| .incomplete "expected a token, got none"
+      curr := atom tk.toString :: curr
+  if !stack.isEmpty then
+    throw <| .incomplete "expected ')'"
+  return curr.reverse
 
-partial def parseManyAux : List Substring → Except ParseError (Array Sexp × List Substring) :=
-  go #[]
-where go (stk : Array Sexp)
-  | tk :: tks => do
-    if tk.front == ')' then .ok (stk, tk :: tks)
-    else
-      let (e, tks) ← parseOneAux (tk :: tks)
-      go (stk.push e) tks
-  | [] => .ok (stk, [])
-end
+def parseOneAux (tks : Array Substring) : Except ParseError Sexp := do
+  if h : tks.size = 0 then
+    throw <| .incomplete "expected a token, got none"
+  else if tks.size = 1 then
+    if tks[0].front == '(' then
+      throw <| .incomplete "expected ')'"
+    if tks[0].front == ')' then
+      throw <| .malformed "unexpected ')'"
+    return atom tks[0].toString
+  else
+    if tks[0].front != '(' then
+      throw <| .malformed "expected '('"
+    if tks[tks.size - 1].front != ')' then
+      throw <| .incomplete "expected ')'"
+    return expr (← parseManyAux tks[1:tks.size - 1])
 
 /-- Parse all the s-expressions in the given string. For example, `"(abc) (def)"` contains two. -/
 def parseMany (s : String) : Except ParseError (List Sexp) := do
   let tks ← tokenize s.toSubstring
-  let (sexps, tks) ← parseManyAux tks.toList
-  if !tks.isEmpty then
-    throw <| .malformed s!"unexpected '{tks.get! 0}'"
-  return sexps.toList
+  let sexps ← parseManyAux tks
+  return sexps
 
 /-- Parse a single s-expression. Note that the string may contain extra data, but parsing will
 succeed as soon as the single s-exp is complete. -/
 def parseOne (s : String) : Except ParseError Sexp := do
   let tks ← tokenize s.toSubstring
-  let (sexp, _) ← parseOneAux tks.toList
+  let sexp ← parseOneAux tks
   return sexp
 
 end Sexp

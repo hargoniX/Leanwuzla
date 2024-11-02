@@ -1,3 +1,6 @@
+import Lean.Elab.Tactic.BVDecide.Frontend.BVDecide
+import Lean.Language.Lean
+
 import Leanwuzla.Parser
 
 open Lean
@@ -31,23 +34,31 @@ def decide (type : Expr) : MetaM Unit := do
   let mv ← Meta.mkFreshExprMVar type
   let (_, mv') ← mv.mvarId!.introsP
   trace[debug] "{mv'}"
-  mv'.withContext $ IO.FS.withTempFile fun _ lratFile => do
-    let startTime ← IO.monoMsNow
-    let cfg ← (Tactic.BVDecide.Frontend.TacticContext.new lratFile).run' { declName? := `lrat }
-    discard <| Tactic.BVDecide.Frontend.bvDecide mv' cfg
-    let endTime ← IO.monoMsNow
-    logInfo m!"bv_decide took {endTime - startTime}ms"
+  try
+    mv'.withContext $ IO.FS.withTempFile fun _ lratFile => do
+      let startTime ← IO.monoMsNow
+      let cfg ← (Tactic.BVDecide.Frontend.TacticContext.new lratFile).run' { declName? := `lrat }
+      discard <| Tactic.BVDecide.Frontend.bvDecide mv' cfg
+      let endTime ← IO.monoMsNow
+      logInfo m!"bv_decide took {endTime - startTime}ms"
+  catch e =>
+    if (← e.toMessageData.toString).startsWith "The prover found a counterexample" then
+      IO.println "sat"
+      return
+    else
+      throwError e.toMessageData
   let value ← instantiateExprMVars mv
   let r := (← getEnv).addDecl (← getOptions) (.thmDecl { name := ← Lean.mkAuxName `thm 1, levelParams := [], type, value })
   match r with
   | .error e =>
     throwError m!"Error: {e.toMessageData (← getOptions)}"
   | .ok env =>
-    modifyEnv fun _ => env
+    setEnv env
+    IO.println "unsat"
 
 def parseSmt2File (path : System.FilePath) : MetaM Expr := do
   let query ← IO.FS.readFile path
-  Parser.parseSmt2Query query
+  ofExcept (Parser.parseSmt2Query query)
 
 def parseAndDecideSmt2File (path : System.FilePath) : MetaM Unit := do
   let type ← parseSmt2File path
