@@ -410,6 +410,7 @@ def bvCompare (g : MVarId) (solverPath : System.FilePath) (cfg : TacticContext) 
       |>.setBool `trace.profiler true
       |>.setBool `trace.Meta.Tactic.bv true
       |>.setBool `trace.Meta.Tactic.sat true
+      |>.setNat `trace.profiler.threshold 1
   withOptions setTraceOptions do
     let s ← saveState
     resetTraceState
