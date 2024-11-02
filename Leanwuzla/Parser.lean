@@ -393,14 +393,10 @@ where
     | .forallE _ _ b _ => retType b
     | e                => e
   parseVar? (s : Sexp) : ParserM (Option (Expr × Expr)) := do
-    if let .atom n := s then
-      let n := smtSymbolToName n
-      if let some (t, n) := (← get).bvars[n]? then
-        return some (t, .bvar n)
-      else
-        return none
-    else
-      return none
+    let .atom n := s | return none
+    let n := smtSymbolToName n
+    let some (t, n) := (← get).bvars[n]? | return none
+    return some (t, .bvar n)
   parseBVLiteral? (s : Sexp) : Option (Expr × Expr) :=
     match s with
     | sexp!{(_ {.atom v} {.atom w})} =>
