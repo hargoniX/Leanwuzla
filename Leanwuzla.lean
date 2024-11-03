@@ -370,12 +370,13 @@ where
       | _ => continue
 
 partial def evalBitwuzla (g : MVarId) (solverPath : System.FilePath) : MetaM BitwuzlaPerf := do
-  let t1 ← IO.monoNanosNow
-  let res ← bvBitwuzla g solverPath
-  let t2 ← IO.monoNanosNow
-  let overallTime := (Float.ofNat <| t2 - t1) / 1000000.0
-  let (_, solvingContextTime) ← parseBitwuzlaTrace ((← getTraces).toArray.map TraceElem.msg) |>.run 0
-  return { success := res.isOk, overallTime, solvingContextTime }
+  g.withContext do
+    let t1 ← IO.monoNanosNow
+    let res ← bvBitwuzla g solverPath
+    let t2 ← IO.monoNanosNow
+    let overallTime := (Float.ofNat <| t2 - t1) / 1000000.0
+    let (_, solvingContextTime) ← parseBitwuzlaTrace ((← getTraces).toArray.map TraceElem.msg) |>.run 0
+    return { success := res.isOk, overallTime, solvingContextTime }
 where
   parseBitwuzlaTrace (msgs : Array MessageData) : StateT Float IO Unit := do
     for msg in msgs do
@@ -392,17 +393,18 @@ where
 
 
 def evalLeanSat (g : MVarId) (cfg : TacticContext) : MetaM (Option MVarId × LeansatPerf) := do
-  let t1 ← IO.monoNanosNow
-  let result ← bvDecide' g cfg
-  let t2 ← IO.monoNanosNow
-  let overallTime := (Float.ofNat <| t2 - t1) / 1000000.0
+  g.withContext do
+    let t1 ← IO.monoNanosNow
+    let result ← bvDecide' g cfg
+    let t2 ← IO.monoNanosNow
+    let overallTime := (Float.ofNat <| t2 - t1) / 1000000.0
 
-  let traces ← getTraces
-  match result with
-  | .ok _ =>
-    return (none, .success overallTime (← parseSuccessTrace traces))
-  | .error g =>
-    return (g, .failure overallTime (← parseFailureTrace traces))
+    let traces ← getTraces
+    match result with
+    | .ok _ =>
+      return (none, .success overallTime (← parseSuccessTrace traces))
+    | .error g =>
+      return (g, .failure overallTime (← parseFailureTrace traces))
 where
   bvDecide' (g : MVarId) (cfg : TacticContext) : MetaM (Except MVarId Unit) := do
     let g? ← Normalize.bvNormalize g
@@ -449,16 +451,18 @@ def evalBvCompare : Tactic := fun
       let g ← getMainGoal
       let (g'?, res) ← bvCompare g solverPath.getString cfg
       logInfo <| toString res
-      let some g' := g'? | return ()
-      replaceMainGoal [g']
+      match g'? with
+      | some g' => replaceMainGoal [g']
+      | none => replaceMainGoal []
   | `(tactic| bv_compare) => do
     IO.FS.withTempFile fun _ lratFile => do
       let cfg ← TacticContext.new lratFile
       let g ← getMainGoal
       let (g'?, res) ← bvCompare g "bitwuzla" cfg
       logInfo <| toString res
-      let some g' := g'? | return ()
-      replaceMainGoal [g']
+      match g'? with
+      | some g' => replaceMainGoal [g']
+      | none => replaceMainGoal []
   | _ => throwUnsupportedSyntax
 
 end Frontend
