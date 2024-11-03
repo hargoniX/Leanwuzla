@@ -3,26 +3,15 @@ import Leanwuzla.Sexp
 
 open Lean
 
-/- Avoids stack-overflow in deeply nested s-expressions. -/
-private def Parser.sexpTopLevelHash : Sexp → UInt64
-  | .atom s  => hash s
-  | .expr ss => hash (ss.filter Sexp.isAtom)
-
-private instance : Hashable Sexp := ⟨Parser.sexpTopLevelHash⟩
-
 structure Parser.State where
+  /-- Current de Bruijn level. -/
+  level : Nat := 0
   /-- A mapping from variable names to their corresponding type and de Bruijn
       level (not index). So, the variables are indexed from the bottom of the
       stack rather than from the top (i.e., the order in which the symbols are
-      introduced in the SMT-LIB file). The expressions created by this parser
-      are not valid Lean expressions until the indices are reversed. We follow
-      this approach to simplify parsing and preserve the cache. -/
+      introduced in the SMT-LIB file). To compute the de Bruijn index, we
+      subtract the variable's level from the current level. -/
   bvars : Std.HashMap Name (Expr × Nat) := {}
-  /-- A mapping from SMT-LIB term to its corresponding Lean type and expression
-      (modulo bound variable indexing). -/
-  cache : Std.HashMap Sexp (Expr × Expr) := {}
-  /-- Current binder level. -/
-  level : Nat := 0
 deriving Repr
 
 abbrev ParserM := StateT Parser.State (Except MessageData)
@@ -133,12 +122,7 @@ partial def parseSort : Sexp → ParserM Expr
 
 partial def parseTerm (s : Sexp) : ParserM (Expr × Expr) := do
   try
-    if let some r := (← get).cache[s]? then
-      return r
-    else
-      let r ← go s
-      modify fun state => { state with cache := state.cache.insert s r }
-      return r
+    go s
   catch e =>
     throw m!"Error: {e}\nfailed to parse term {s}"
 where
@@ -374,9 +358,10 @@ where
     | e                => e
   parseVar? (s : Sexp) : ParserM (Option (Expr × Expr)) := do
     let .atom n := s | return none
+    let state ← get
     let n := smtSymbolToName n
-    let some (t, n) := (← get).bvars[n]? | return none
-    return some (t, .bvar n)
+    let some (t, i) := state.bvars[n]? | return none
+    return some (t, .bvar (state.level - i - 1))
   parseBVLiteral? (s : Sexp) : Option (Expr × Expr) :=
     match s with
     | sexp!{(_ {.atom v} {.atom w})} =>
@@ -433,16 +418,14 @@ where
     -- parsed.
     let state ← get
     let bindings ← bindings.mapM parseBinding
-    -- clear the cache if there's variable shadowing
-    let clearCache := bindings.any fun (_, n, _) => state.bvars.contains n
     let (level, bvars) := bindings.foldl (fun (lvl, bvs) (_, n, t, _) => (lvl + 1, bvs.insert n (t, lvl))) (state.level, state.bvars)
-    let cache := if clearCache then {} else state.cache
-    set { bvars, cache, level : Parser.State }
+    set { bvars, level : Parser.State }
     return bindings
   parseBinding (binding : Sexp) : ParserM (Sexp × Name × Expr × Expr) := do
     match binding with
     | sexp!{({n} {v})} =>
       let (t, v) ← parseTerm v
+      modify fun state => { state with level := state.level + 1 }
       return (n, smtSymbolToName n.serialize, t, v)
     | _ =>
       throw m!"Error: unsupported bindings {binding}"
@@ -456,11 +439,8 @@ private def mkArrow (α β : Expr) : Expr :=
 def withDecls (decls : List Sexp) (k : ParserM Expr) : ParserM Expr := do
   let state ← get
   let mut decls ← decls.mapM parseDecl
-  -- clear the cache if there's variable shadowing
-  let clearCache := decls.any fun (_, n, _) => state.bvars.contains n
   let (level, bvars) := decls.foldl (fun (lvl, bvs) (_, n, t) => (lvl + 1, bvs.insert n (t, lvl))) (state.level, state.bvars)
-  let cache := if clearCache then {} else state.cache
-  set { bvars, cache, level : Parser.State }
+  set { bvars, level : Parser.State }
   let b ← k
   set state
   return decls.foldr (fun (_, n, t) b => .forallE n t b .default) b
@@ -490,19 +470,14 @@ where
     | sexp!{(define-fun {n} (...{ps}) {s} {b})} =>
       let state ← get
       let ps ← ps.mapM parseParam
-      -- clear the cache if there's variable shadowing
-      let clearCache := ps.any fun (_, n, _) => state.bvars.contains n
       let (level, bvars) := ps.foldl (fun (lvl, bvs) (_, n, t) => (lvl + 1, bvs.insert n (t, lvl))) (state.level, state.bvars)
-      let cache := if clearCache then {} else state.cache
-      set { bvars, cache, level : Parser.State }
+      set { bvars, level : Parser.State }
       let s ← parseSort s
       let (_, b) ← parseTerm b
       let nn := smtSymbolToName n.serialize
-      let clearCache := state.bvars.contains nn
       let bvars := state.bvars.insert nn (s, state.level)
-      let cache := if clearCache then {} else state.cache
       let level := state.level + 1
-      set { bvars, cache, level : Parser.State }
+      set { bvars, level : Parser.State }
       let t := ps.foldr (fun (_, n, t) b => .forallE n t b .default) s
       let v := ps.foldr (fun (_, n, t) b => .lam n t b .default) b
       return (n, nn, t, v)
@@ -521,77 +496,19 @@ def parseAssert : Sexp → ParserM Expr
   | s =>
     throw m!"Error: unsupported assert {s}"
 
-/-- A single pass to reverse the indices of bound variables. This is done to
-    replace de Bruijn levels used by the parser with de Bruijn indices
-    understood by Lean. Note: The Lean expression produced by the parser could
-    be deeply nested. So, we flatten nested applications of the same constructor
-    to avoid stack overflows.
--/
-partial def reverseIndices (e : Expr) : Expr :=
-  go 0 e
-where
-  go (scope : Nat) (e : Expr) : Expr :=
-    if e.isApp then
-      let (op, as) := getLeftAssocOpAndArgs #[] e
-      if as.isEmpty then
-        let (f, as) := getAppFnAndArgs #[] e
-        mkAppN (go scope f) (as.map (go scope))
-      else
-        let op := go scope op
-        let as := as.map (go scope)
-        as[1:].foldl (mkApp2 op) as[0]!
-    else if e.isLambda then
-      let (bs, b) := getLamBindersAndBody #[] e
-      bs.foldr (fun (n, t, d) b => .lam n t b d) (go (scope + bs.size) b)
-    else if e.isForall then
-      let (bs, b) := getForallBindersAndBody #[] e
-      bs.foldr (fun (n, t, d) b => .forallE n t b d) (go (scope + bs.size) b)
-    else if e.isLet then
-      let (bs, b) := getLetBindersAndBody #[] e
-      let bs := bs.mapIdx fun i (n, t, v) => (n, t, go (scope + i) v)
-      bs.foldr (fun (n, t, v) b => .letE n t v b true) (go (scope + bs.size) b)
-    else if let .bvar i := e then
-      .bvar (scope - i - 1)
-    else
-      e
-  getAppFnAndArgs (as : Array Expr) : Expr → Expr × Array Expr
-    | .app f a => getAppFnAndArgs (as.push a) f
-    | e        => (e, as.reverse)
-  getLeftAssocOpAndArgs (as : Array Expr) : Expr → Expr × Array Expr
-    | .app (.app f₁ (.app (.app f₂ a₁) a₂)) a₃ =>
-      if f₁ == f₂ then
-        getLeftAssocOpAndArgs (as.push a₃) (.app (.app f₂ a₁) a₂)
-      else
-        let as := (as.push a₃).push (.app (.app f₂ a₁) a₂)
-        (f₁, as.reverse)
-    | .app (.app f e) a =>
-      let as := (as.push a).push e
-      (f, as.reverse)
-    | e        => (e, as.reverse)
-  getLamBindersAndBody (as : Array (Name × Expr × BinderInfo)) : Expr → Array (Name × Expr × BinderInfo) × Expr
-    | .lam n t b d => getLamBindersAndBody (as.push (n, t, d)) b
-    | e            => (as, e)
-  getForallBindersAndBody (as : Array (Name × Expr × BinderInfo)) : Expr → Array (Name × Expr × BinderInfo) × Expr
-    | .forallE n t b d => getForallBindersAndBody (as.push (n, t, d)) b
-    | e                => (as, e)
-  getLetBindersAndBody (as : Array (Name × Expr × Expr)) : Expr → Array (Name × Expr × Expr) × Expr
-    | .letE n t v b _ => getLetBindersAndBody (as.push (n, t, v)) b
-    | e               => (as, e)
-
 structure Query where
   decls : List Sexp := []
   defs : List Sexp := []
   asserts : List Sexp := []
 
 def parseQuery (query : Query) : ParserM Expr := do
-  let e ← withDecls query.decls <| withDefs query.defs do
-    try
+  try
+    withDecls query.decls <| withDefs query.defs do
       let conjs ← query.asserts.mapM parseAssert
       let p := conjs.tail.foldl (mkApp2 (.const ``and [])) conjs.head!
       return mkApp3 (.const ``Eq [levelOne]) (.const ``Bool []) (.app (.const ``not []) p) (.const ``true [])
-    catch e =>
-      throw m!"Error: {e}\nfailed to parse query {repr (← get)}"
-  return reverseIndices e
+  catch e =>
+    throw m!"Error: {e}\nfailed to parse query {repr (← get)}"
 
 def filterCmds (sexps : List Sexp) : Query :=
   go {} sexps

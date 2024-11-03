@@ -5,6 +5,11 @@ import Leanwuzla.Parser
 
 open Lean
 
+register_option leanwuzla.parseOnly : Bool := {
+  defValue := false
+  descr    := "only parse the SMT2 file and type-check the generated Lean expression"
+}
+
 private partial def getIntrosSize (e : Expr) : Nat :=
   go 0 e
 where
@@ -46,7 +51,7 @@ def decide (type : Expr) : MetaM Unit := do
       IO.println "sat"
       return
     else
-      throwError e.toMessageData
+      throwError "Error: {e.toMessageData}"
   let value ← instantiateExprMVars mv
   let r := (← getEnv).addDecl (← getOptions) (.thmDecl { name := ← Lean.mkAuxName `thm 1, levelParams := [], type, value })
   match r with
@@ -56,13 +61,29 @@ def decide (type : Expr) : MetaM Unit := do
     setEnv env
     IO.println "unsat"
 
+def typeCheck (e : Expr) : MetaM Unit := do
+  let defn := .defnDecl {
+    name := ← Lean.mkAuxName `def 1
+    levelParams := []
+    type := .sort .zero
+    value := e
+    hints := .regular 0
+    safety := .safe
+  }
+  let r := (← getEnv).addDecl (← getOptions) defn
+  let .error e := r | return
+  throwError m!"Error: {e.toMessageData (← getOptions)}"
+
 def parseSmt2File (path : System.FilePath) : MetaM Expr := do
   let query ← IO.FS.readFile path
   ofExcept (Parser.parseSmt2Query query)
 
 def parseAndDecideSmt2File (path : System.FilePath) : MetaM Unit := do
   let type ← parseSmt2File path
-  decide type
+  if (← getOptions).getBool `leanwuzla.parseOnly then
+    typeCheck type
+  else
+    decide type
 
 open Elab Command in
 def elabParseSmt2File (path : System.FilePath) : CommandElabM Unit := do

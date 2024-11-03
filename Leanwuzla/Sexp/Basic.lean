@@ -12,7 +12,7 @@ import Std.Internal.Parsec.String
 inductive Sexp where
   | atom : String → Sexp
   | expr : List Sexp → Sexp
-deriving Repr, BEq, Inhabited, Hashable
+deriving Repr, BEq, Inhabited
 
 class ToSexp (α : Type u) where
   toSexp : α → Sexp
