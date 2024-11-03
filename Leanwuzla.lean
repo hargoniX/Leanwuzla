@@ -425,8 +425,7 @@ def bvCompare (g : MVarId) (solverPath : System.FilePath) (cfg : TacticContext) 
   trace[Meta.Tactic.bv] "running bitwuzla"
   let bitwuzlaPerf ←
     withOptions setTraceOptions <| withoutModifyingEnv <| withoutModifyingState <| withoutModifyingTraceState do
-      let g' ← mkFreshExprMVar (← g.getType)
-      evalBitwuzla g'.mvarId! solverPath
+      evalBitwuzla g solverPath
 
   trace[Meta.Tactic.bv] "running leansat"
 
