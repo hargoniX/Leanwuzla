@@ -421,20 +421,21 @@ def bvCompare (g : MVarId) (solverPath : System.FilePath) (cfg : TacticContext) 
       |>.setBool `trace.Meta.Tactic.bv true
       |>.setBool `trace.Meta.Tactic.sat true
       |>.setNat `trace.profiler.threshold 1
-    trace[Meta.Tactic.bv] "running bitwuzla"
-    let bitwuzlaPerf ←
-      withOptions setTraceOptions <| withoutModifyingEnv <| withoutModifyingState <| withoutModifyingTraceState do
-        let g' ← mkFreshExprMVar (← g.getType)
-        evalBitwuzla g'.mvarId! solverPath
 
-    trace[Meta.Tactic.bv] "running leansat"
+  trace[Meta.Tactic.bv] "running bitwuzla"
+  let bitwuzlaPerf ←
+    withOptions setTraceOptions <| withoutModifyingEnv <| withoutModifyingState <| withoutModifyingTraceState do
+      let g' ← mkFreshExprMVar (← g.getType)
+      evalBitwuzla g'.mvarId! solverPath
 
-    let (g', leansatPerf) ←
-      withOptions setTraceOptions <| withoutModifyingTraceState do
-        evalLeanSat g cfg
+  trace[Meta.Tactic.bv] "running leansat"
 
-    trace[Meta.Tactic.bv] "finished measuring"
-    return (g', { bitwuzlaPerf, leansatPerf })
+  let (g', leansatPerf) ←
+    withOptions setTraceOptions <| withoutModifyingTraceState do
+      evalLeanSat g cfg
+
+  trace[Meta.Tactic.bv] "finished measuring"
+  return (g', { bitwuzlaPerf, leansatPerf })
 where
   withoutModifyingTraceState {α : Type} (x : MetaM α) : MetaM α := do
     let traces ← getTraceState
