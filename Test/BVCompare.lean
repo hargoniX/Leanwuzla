@@ -19,3 +19,10 @@ example : ∀ (x : BitVec 32), x.and 0#32 = 0#32 := by
 
 example : ∀ (x x_1 : BitVec 16), BitVec.truncate 8 ((x_1.and 255#16).and x) = BitVec.truncate 8 (x_1.and x) := by
   bv_compare
+
+example : ∀ (x : BitVec 1), BitVec.ofBool (0#1 > x) = 0#1 := by
+  bv_compare
+
+theorem extracted_1 (x y : BitVec 8) : x + y = x + x := by
+  bv_compare
+  sorry
