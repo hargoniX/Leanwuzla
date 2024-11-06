@@ -50,27 +50,34 @@ https://smtlib.cs.uiowa.edu/papers/smt-lib-reference-v2.6-r2021-05-12.pdf:
 - comments `; abc`
 -/
 
-def comment :=
-  skipChar ';' *> many (satisfy (· != '\n')) *> (skipChar '\n' <|> eof)
+def comment : Parser Unit := do
+  skipChar ';'
+  discard <| many (satisfy (· != '\n'))
+  skipChar '\n' <|> eof
 
-def misc :=
-  ws *> many (comment *> ws) *> pure ()
+def misc : Parser Unit := do
+  ws
+  discard <| many (comment *> ws)
 
-def strLit := do
-  let c ← pchar '"'
-  let s ← manyCharsCore (satisfy (· ≠ '"')) c.toString
-  pure s.push <*> pchar '"'
+def strLit : Parser String := do
+  let cstart ← pchar '"'
+  let s ← manyCharsCore (satisfy (· ≠ '"')) cstart.toString
+  let cend ← pchar '"'
+  return s.push cend
 
-def quotedSym := do
-  let c ← pchar '|'
-  let s ← manyCharsCore (satisfy (· ≠ '|')) c.toString
-  pure s.push <*> pchar '|'
+def quotedSym : Parser String := do
+  let cstart ← pchar '|'
+  let s ← manyCharsCore (satisfy (· ≠ '|')) cstart.toString
+  let cend ← pchar '|'
+  return s.push cend
 
 def sym : Parser String :=
-  many1Chars (satisfy fun c => !c.isWhitespace && c != '(' && c != ')' && c != '|' && c != '"' && c != ';')
+  let filter c := !c.isWhitespace && c != '(' && c != ')' && c != '|' && c != '"' && c != ';'
+  many1Chars (satisfy filter)
 
-def atom :=
-  pure Sexp.atom <*> (strLit <|> quotedSym <|> sym)
+def atom : Parser Sexp := do
+  let a ← strLit <|> quotedSym <|> sym
+  return Sexp.atom a
 
 /--
 Parse all the s-expressions in the given string. For example, `"(abc) (def)"`
@@ -102,28 +109,35 @@ def manySexps : Parser (List Sexp) := do
     fail "expected ')'"
   return curr.reverse
 
-def expr :=
-  pure Sexp.expr <*> (skipChar '(' *> manySexps <* skipChar ')')
+def expr : Parser Sexp := do
+  skipChar '('
+  let sexps ← manySexps
+  skipChar ')'
+  return Sexp.expr sexps
 
 /--
 Parse a single s-expression. Note that the string may contain extra data, but
 parsing will succeed as soon as a single s-expr is complete.
 -/
-def sexp :=
+def sexp : Parser Sexp :=
   atom <|> expr
 
 /--
 Parse all the s-expressions in the given string. For example, `"(abc) (def)"`
 contains two. Parsing fails if there is any extra data after the last s-expr.
 -/
-def manySexps! :=
-  manySexps <* eof
+def manySexps! : Parser (List Sexp) := do
+  let sexps ← manySexps
+  eof
+  return sexps
 
 /--
 Parse a single s-expression. Parsing fails if there is any extra data after the
 s-expr.
 -/
-def sexp! :=
-  sexp <* eof
+def sexp! : Parser Sexp := do
+  let s ← sexp
+  eof
+  return s
 
 end Sexp.Parser
