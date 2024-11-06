@@ -530,7 +530,7 @@ where
         asserts := query.asserts.reverse }
 
 def parseSmt2Query (query : String) : Except MessageData Expr :=
-  match Sexp.parseMany query with
+  match Sexp.Parser.manySexps!.run query with
   | Except.error e =>
     .error s!"{e}"
   | Except.ok cmds =>
