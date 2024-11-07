@@ -412,13 +412,8 @@ def evalLeanSat (g : MVarId) (cfg : TacticContext) : MetaM LeansatPerf := do
 private axiom benchAxiom (α : Prop) : α
 
 def bvCompare (g : MVarId) (solverPath : System.FilePath) (cfg : TacticContext) : MetaM Comparision := do
-  trace[Meta.Tactic.bv] "running bitwuzla"
   let bitwuzlaPerf ← measure evalBitwuzla g solverPath
-
-  trace[Meta.Tactic.bv] "running leansat"
   let leansatPerf ← measure evalLeanSat g cfg
-
-  trace[Meta.Tactic.bv] "finished measuring"
 
   g.assign (mkApp (mkConst ``benchAxiom) (← g.getType))
 
@@ -427,9 +422,7 @@ where
   withFreshTraceState {α : Type} (x : MetaM α) : MetaM α := do
     let traces ← getTraceState
     resetTraceState
-    let ret ← x
-    setTraceState traces
-    return ret
+    try x finally setTraceState traces
 
   measure {α : Type _} {β : Type _} (f : MVarId → α → MetaM β) (g : MVarId) (arg : α) : MetaM (Option β) := do
     let setTraceOptions (opt : Options) : Options :=
@@ -443,10 +436,9 @@ where
       withOptions setTraceOptions <| withoutModifyingEnv <| withoutModifyingState <| withFreshTraceState do
         f g arg
     catch e =>
-      if diagnostics.get (← getOptions) then
+      if (← Lean.isTracingEnabledFor `Meta.Tactic.bv) then
         logError e.toMessageData
       return none
-
 
 @[tactic bvCompare]
 def evalBvCompare : Tactic := fun
