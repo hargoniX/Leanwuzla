@@ -25,7 +25,7 @@ open Std.Tactic.BVDecide.Reflect
 open Lean.Meta
 
 
-partial def toSMT (expr : BVLogicalExpr) (atomsAssignment : Std.HashMap Nat (Nat × Expr)) : String :=
+partial def toSMT (expr : BVLogicalExpr) (atomsAssignment : Std.HashMap Nat (Nat × Expr × Bool)) : String :=
   let (_, buffer) := StateT.run (go expr atomsAssignment) ""
   buffer
 where
@@ -62,7 +62,7 @@ where
       push " "
       e2
 
-  go (expr : BVLogicalExpr) (atomsAssignment : Std.HashMap Nat (Nat × Expr)) : StateM String Unit := do
+  go (expr : BVLogicalExpr) (atomsAssignment : Std.HashMap Nat (Nat × Expr × Bool)) : StateM String Unit := do
     push "(set-logic QF_BV)\n"
     declareConsts atomsAssignment
     pushUnaryOp "assert" (goBVLogical expr)
@@ -70,8 +70,8 @@ where
     push "(check-sat)\n"
     push "(exit)\n"
 
-  declareConsts (atomsAssignment : Std.HashMap Nat (Nat × Expr)) : StateM String Unit := do
-    for (atom, (width, _)) in atomsAssignment do
+  declareConsts (atomsAssignment : Std.HashMap Nat (Nat × Expr × Bool)) : StateM String Unit := do
+    for (atom, (width, _, _)) in atomsAssignment do
       push s!"(declare-const x_{atom} (_ BitVec {width}))\n"
 
   goBVLogical (expr : BVLogicalExpr) : StateM String Unit := do
@@ -210,7 +210,7 @@ private axiom bitwuzlaCorrect (expr : BVLogicalExpr) : expr.Unsat
 def bitwuzlaCounterExample : String := "Bitwuzla found a counter example"
 def bitwuzlaSuccess : String := "Bitwuzla thinks it's right but can't trust the wuzla!"
 
-def bitwuzla (g : MVarId) (reflectionResult : ReflectionResult) (atomsAssignment : Std.HashMap Nat (Nat × Expr))
+def bitwuzla (g : MVarId) (reflectionResult : ReflectionResult) (atomsAssignment : Std.HashMap Nat (Nat × Expr × Bool))
     (solverPath : System.FilePath) :
     MetaM (Except CounterExample UnsatProver.Result) := do
   let smt := toSMT reflectionResult.bvExpr atomsAssignment
