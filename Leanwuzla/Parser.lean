@@ -284,12 +284,12 @@ where
       let (α, x) ← parseTerm x
       let (_, y) ← parseTerm y
       let w := getBitVecWidth α
-      return (mkBool, mkApp3 (.const ``BitVec.ult []) (mkNatLit w) x y)
+      return (mkBool, mkApp3 (.const ``BitVec.ugt []) (mkNatLit w) x y)
     | sexp!{(bvuge {x} {y})} =>
       let (α, x) ← parseTerm x
       let (_, y) ← parseTerm y
       let w := getBitVecWidth α
-      return (mkBool, mkApp3 (.const ``BitVec.ule []) (mkNatLit w) x y)
+      return (mkBool, mkApp3 (.const ``BitVec.uge []) (mkNatLit w) x y)
     | sexp!{(bvslt {x} {y})} =>
       let (α, x) ← parseTerm x
       let (_, y) ← parseTerm y
