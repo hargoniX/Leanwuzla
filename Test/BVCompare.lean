@@ -25,4 +25,7 @@ example : ∀ (x : BitVec 1), BitVec.ofBool (0#1 > x) = 0#1 := by
 
 theorem extracted_1 (x y : BitVec 8) : x + y = x + x := by
   bv_compare
-  sorry
+
+set_option sat.timeout 1
+example (x y : BitVec 64) : x * y = y * x := by
+  bv_compare

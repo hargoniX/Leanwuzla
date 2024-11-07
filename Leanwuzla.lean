@@ -205,7 +205,7 @@ def smtQuery (solverPath : System.FilePath) (problemPath : System.FilePath) (tim
 
 
 
-axiom bitwuzlaCorrect (expr : BVLogicalExpr) : expr.Unsat
+private axiom bitwuzlaCorrect (expr : BVLogicalExpr) : expr.Unsat
 
 def bitwuzlaCounterExample : String := "Bitwuzla found a counter example"
 def bitwuzlaSuccess : String := "Bitwuzla thinks it's right but can't trust the wuzla!"
@@ -272,8 +272,8 @@ inductive LeansatPerf where
 | failure (overallTime : Float) (timings : LeansatFailureTimings)
 
 structure Comparision where
-  bitwuzlaPerf : BitwuzlaPerf
-  leansatPerf : LeansatPerf
+  bitwuzlaPerf : Option BitwuzlaPerf
+  leansatPerf : Option LeansatPerf
 
 def BitwuzlaPerf.toString (perf : BitwuzlaPerf) : String :=
   if perf.success then
@@ -309,7 +309,11 @@ instance : ToString LeansatPerf where
   toString := LeansatPerf.toString
 
 def Comparision.toString (comp : Comparision) : String :=
-  comp.bitwuzlaPerf.toString ++ "\n" ++ comp.leansatPerf.toString
+  match comp.bitwuzlaPerf, comp.leansatPerf with
+  | none, none => "Bitwuzla failed.\nLeanSAT failed."
+  | some bitwuzla, none => bitwuzla.toString ++ "\nLeanSAT failed."
+  | none, some leansat => "Bitwuzla failed.\n" ++ leansat.toString
+  | some bitwuzla, some leansat => bitwuzla.toString ++ "\n" ++ leansat.toString
 
 instance : ToString Comparision where
   toString := Comparision.toString
@@ -391,8 +395,7 @@ where
       | .withContext _ msg => parseBitwuzlaTrace #[msg]
       | _ => continue
 
-
-def evalLeanSat (g : MVarId) (cfg : TacticContext) : MetaM (Option MVarId × LeansatPerf) := do
+def evalLeanSat (g : MVarId) (cfg : TacticContext) : MetaM LeansatPerf := do
   g.withContext do
     let t1 ← IO.monoNanosNow
     let result ← bvDecide' g cfg
@@ -402,46 +405,48 @@ def evalLeanSat (g : MVarId) (cfg : TacticContext) : MetaM (Option MVarId × Lea
     let traces ← getTraces
     match result with
     | .ok _ =>
-      return (none, .success overallTime (← parseSuccessTrace traces))
-    | .error g =>
-      return (g, .failure overallTime (← parseFailureTrace traces))
-where
-  bvDecide' (g : MVarId) (cfg : TacticContext) : MetaM (Except MVarId Unit) := do
-    let g? ← Normalize.bvNormalize g
-    let some g := g? | return .ok ()
-    match ← bvUnsat g cfg with
-    | .ok _ => return .ok ()
-    | .error _ => return .error g
+      return .success overallTime (← parseSuccessTrace traces)
+    | .error _ =>
+      return .failure overallTime (← parseFailureTrace traces)
 
-def bvCompare (g : MVarId) (solverPath : System.FilePath) (cfg : TacticContext) :
-    MetaM (Option MVarId × Comparision) := do
-  let setTraceOptions (opt : Options) : Options :=
-    opt
-      |>.setBool `trace.profiler true
-      |>.setBool `trace.Meta.Tactic.bv true
-      |>.setBool `trace.Meta.Tactic.sat true
-      |>.setNat `trace.profiler.threshold 1
+private axiom benchAxiom (α : Prop) : α
 
+def bvCompare (g : MVarId) (solverPath : System.FilePath) (cfg : TacticContext) : MetaM Comparision := do
   trace[Meta.Tactic.bv] "running bitwuzla"
-  let bitwuzlaPerf ←
-    withOptions setTraceOptions <| withoutModifyingEnv <| withoutModifyingState <| withoutModifyingTraceState do
-      evalBitwuzla g solverPath
+  let bitwuzlaPerf ← measure evalBitwuzla g solverPath
 
   trace[Meta.Tactic.bv] "running leansat"
-
-  let (g', leansatPerf) ←
-    withOptions setTraceOptions <| withoutModifyingTraceState do
-      evalLeanSat g cfg
+  let leansatPerf ← measure evalLeanSat g cfg
 
   trace[Meta.Tactic.bv] "finished measuring"
-  return (g', { bitwuzlaPerf, leansatPerf })
+
+  g.assign (mkApp (mkConst ``benchAxiom) (← g.getType))
+
+  return { bitwuzlaPerf , leansatPerf }
 where
-  withoutModifyingTraceState {α : Type} (x : MetaM α) : MetaM α := do
+  withFreshTraceState {α : Type} (x : MetaM α) : MetaM α := do
     let traces ← getTraceState
     resetTraceState
     let ret ← x
     setTraceState traces
     return ret
+
+  measure {α : Type _} {β : Type _} (f : MVarId → α → MetaM β) (g : MVarId) (arg : α) : MetaM (Option β) := do
+    let setTraceOptions (opt : Options) : Options :=
+      opt
+        |>.setBool `trace.profiler true
+        |>.setBool `trace.Meta.Tactic.bv true
+        |>.setBool `trace.Meta.Tactic.sat true
+        |>.setNat `trace.profiler.threshold 1
+
+    try
+      withOptions setTraceOptions <| withoutModifyingEnv <| withoutModifyingState <| withFreshTraceState do
+        f g arg
+    catch e =>
+      if diagnostics.get (← getOptions) then
+        logError e.toMessageData
+      return none
+
 
 @[tactic bvCompare]
 def evalBvCompare : Tactic := fun
@@ -449,20 +454,14 @@ def evalBvCompare : Tactic := fun
     IO.FS.withTempFile fun _ lratFile => do
       let cfg ← TacticContext.new lratFile
       let g ← getMainGoal
-      let (g'?, res) ← bvCompare g solverPath.getString cfg
+      let res ← bvCompare g solverPath.getString cfg
       logInfo <| toString res
-      match g'? with
-      | some g' => replaceMainGoal [g']
-      | none => replaceMainGoal []
   | `(tactic| bv_compare) => do
     IO.FS.withTempFile fun _ lratFile => do
       let cfg ← TacticContext.new lratFile
       let g ← getMainGoal
-      let (g'?, res) ← bvCompare g "bitwuzla" cfg
+      let res ← bvCompare g "bitwuzla" cfg
       logInfo <| toString res
-      match g'? with
-      | some g' => replaceMainGoal [g']
-      | none => replaceMainGoal []
   | _ => throwUnsupportedSyntax
 
 end Frontend
