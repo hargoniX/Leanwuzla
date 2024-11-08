@@ -1,6 +1,7 @@
 import Lean.Elab.Tactic.BVDecide.Frontend.BVDecide
 import Lean.Language.Lean
-
+import Lean.Meta.Tactic.AC
+import Leanwuzla.Options
 import Leanwuzla.Parser
 
 open Lean
@@ -34,16 +35,26 @@ def _root_.Lean.MVarId.introsP (mvarId : MVarId) : MetaM (Array FVarId × MVarId
   else
     mvarId.introNP n
 
-open Elab in
+open Elab Meta Tactic in
 def decide (type : Expr) : MetaM Unit := do
   let mv ← Meta.mkFreshExprMVar type
   let (_, mv') ← mv.mvarId!.introsP
   trace[debug] "{mv'}"
   try
     mv'.withContext $ IO.FS.withTempFile fun _ lratFile => do
+      let mut mv' := mv'
       let startTime ← IO.monoMsNow
       let cfg ← (Tactic.BVDecide.Frontend.TacticContext.new lratFile).run' { declName? := `lrat }
-      discard <| Tactic.BVDecide.Frontend.bvDecide mv' cfg
+
+      if bitwuzla.ac_nf.get (← getOptions) then
+        logInfo "running ac_nf on goal"
+        mv' ← AC.rewriteUnnormalized mv'
+
+      if bitwuzla.admit.get (← getOptions)  then 
+        logInfo "admitting goal"
+        mv'.admit
+      else
+        discard <| Tactic.BVDecide.Frontend.bvDecide mv' cfg
       let endTime ← IO.monoMsNow
       logInfo m!"bv_decide took {endTime - startTime}ms"
   catch e =>
