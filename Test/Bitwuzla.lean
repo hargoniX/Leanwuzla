@@ -87,3 +87,8 @@ example (h : a = c) : (a → b) = (!c || b) := by
 #guard_msgs in
 example : ite a b c = ite (!a) c b := by
   bv_bitwuzla
+
+/-- error: Bitwuzla thinks it's right but can't trust the wuzla! -/
+#guard_msgs in
+example {x y : BitVec 32} (h : BitVec.slt 0 x) : BitVec.sshiftRight' x y = x >>> y := by
+  bv_bitwuzla

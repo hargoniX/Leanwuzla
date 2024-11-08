@@ -164,6 +164,7 @@ where
         pushUnaryOp s!"(_ sign_extend {v - w})" (goBVExpr expr)
     | .shiftLeft lhs rhs => pushBinaryOp "bvshl" (goBVExpr lhs) (goBVExpr rhs)
     | .shiftRight lhs rhs => pushBinaryOp "bvlshr" (goBVExpr lhs) (goBVExpr rhs)
+    | .arithShiftRight lhs rhs => pushBinaryOp "bvashr" (goBVExpr lhs) (goBVExpr rhs)
 
   emitTruncate {w : Nat} (expr : BVExpr w) (targetWidth : Nat) : StateM String Unit := do
     pushUnaryOp s!"(_ extract {targetWidth - 1} 0)" (goBVExpr expr)

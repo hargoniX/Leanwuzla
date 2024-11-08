@@ -29,8 +29,4 @@ namespace BitVec
 @[bv_normalize] protected def sge {n : Nat} (x y : BitVec n) : Bool :=
   BitVec.sle y x
 
-/- TODO: bv_decide's default should be `sshiftRight'` -/
-@[bv_normalize] theorem sshiftRight'_eq (x : BitVec w) (n : BitVec v) : x.sshiftRight' n = x.sshiftRight n.toNat :=
-  rfl
-
 end BitVec
