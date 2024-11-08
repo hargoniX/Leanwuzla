@@ -47,7 +47,12 @@ def decide (type : Expr) : MetaM Unit := do
       let endTime ← IO.monoMsNow
       logInfo m!"bv_decide took {endTime - startTime}ms"
   catch e =>
-    if (← e.toMessageData.toString).startsWith "The prover found a counterexample" then
+    -- TODO: improve handling of sat cases. This is a temporary workaround.
+    let message ← e.toMessageData.toString
+    if message.startsWith "The prover found a counterexample" ||
+       message.startsWith "None of the hypotheses are in the supported BitVec fragment" then
+      -- We fully support SMT-LIB v2.6. Getting the above error message means
+      -- the goal was reduced to `False` with only `True` as an assumption.
       IO.println "sat"
       return
     else
