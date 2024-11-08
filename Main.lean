@@ -1,6 +1,7 @@
 import Lean.Elab.Tactic.BVDecide.Frontend.BVDecide
 import Lean.Language.Lean
 
+import Leanwuzla
 import Leanwuzla.Parser
 
 open Lean
@@ -34,6 +35,13 @@ def _root_.Lean.MVarId.introsP (mvarId : MVarId) : MetaM (Array FVarId × MVarId
   else
     mvarId.introNP n
 
+
+open Elab
+
+#check Tactic.BVDecide.Frontend.evalLeanSat
+
+-- dbg_trace
+-- trace[<>] m!"jadasdsad"
 open Elab in
 def decide (type : Expr) : MetaM Unit := do
   let mv ← Meta.mkFreshExprMVar type
@@ -43,9 +51,11 @@ def decide (type : Expr) : MetaM Unit := do
     mv'.withContext $ IO.FS.withTempFile fun _ lratFile => do
       let startTime ← IO.monoMsNow
       let cfg ← (Tactic.BVDecide.Frontend.TacticContext.new lratFile).run' { declName? := `lrat }
+      let leansatPerf ← Lean.Elab.Tactic.BVDecide.Frontend.bvCompare.measure Tactic.BVDecide.Frontend.evalLeanSat mv' cfg
       discard <| Tactic.BVDecide.Frontend.bvDecide mv' cfg
       let endTime ← IO.monoMsNow
       logInfo m!"bv_decide took {endTime - startTime}ms"
+      logInfo m!"{leansatPerf}"
   catch e =>
     if (← e.toMessageData.toString).startsWith "The prover found a counterexample" then
       IO.println "sat"
@@ -59,6 +69,9 @@ def decide (type : Expr) : MetaM Unit := do
     throwError m!"Error: {e.toMessageData (← getOptions)}"
   | .ok env =>
     setEnv env
+    let log ← Core.getMessageLog
+    for msg in log.toArray do
+      IO.println (← msg.toString)
     IO.println "unsat"
 
 def typeCheck (e : Expr) : MetaM Unit := do
