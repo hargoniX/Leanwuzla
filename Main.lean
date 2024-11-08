@@ -44,16 +44,18 @@ def decide (type : Expr) : MetaM Unit := do
     mv'.withContext $ IO.FS.withTempFile fun _ lratFile => do
       let mut mv' := mv'
       let startTime ← IO.monoMsNow
-      let cfg ← (Tactic.BVDecide.Frontend.TacticContext.new lratFile).run' { declName? := `lrat }
 
-      if bitwuzla.ac_nf.get (← getOptions) then
-        logInfo "running ac_nf on goal"
+      if leanwuzla.ac_nf.get (← getOptions) then
+        IO.println "running ac_nf on goal..."
         mv' ← AC.rewriteUnnormalized mv'
+        IO.println "ac_nf finished running."
 
-      if bitwuzla.admit.get (← getOptions)  then 
-        logInfo "admitting goal"
+      if leanwuzla.admit.get (← getOptions)  then 
+        IO.println "admitting goal"
         mv'.admit
       else
+        IO.println "proving goal with bv_decide."
+        let cfg ← (Tactic.BVDecide.Frontend.TacticContext.new lratFile).run' { declName? := `lrat }
         discard <| Tactic.BVDecide.Frontend.bvDecide mv' cfg
       let endTime ← IO.monoMsNow
       logInfo m!"bv_decide took {endTime - startTime}ms"

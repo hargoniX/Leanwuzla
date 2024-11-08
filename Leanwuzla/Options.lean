@@ -10,18 +10,18 @@ import Lean
 open Lean
 
 
-register_option bitwuzla.ac_nf : Bool := {
+register_option leanwuzla.ac_nf : Bool := {
   defValue := false
   descr := "Enable running 'ac_nf' before the goal"
 }
 
-register_option bitwuzla.simp_ac : Bool := {
+register_option leanwuzla.simp_ac : Bool := {
   defValue := false
   descr := "Enable simplifying upto associativity commutativity by running a `simp` set."
 }
 
-register_option bitwuzla.admit : Bool := {
-  defValue := true
+register_option leanwuzla.admit : Bool := {
+  defValue := false
   descr := "Enable admitting the goal without running `bv_decide`"
 }
 
