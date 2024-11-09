@@ -18,8 +18,9 @@ bv_compare "/path/to/bitwuzla"
 This provides the ability to call `bv_decide` with QF_BV SMT-LIB v2 problems. You can call it like
 this:
 ```
-lake exe leanwuzla [-D name=value] /path/to/file.smt2
+lake exe leanwuzla file.smt2
 ```
+For options see `--help`
 
 ## Quality and Stability
 This tool:
