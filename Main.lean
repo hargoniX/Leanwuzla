@@ -1,14 +1,10 @@
 import Lean.Elab.Tactic.BVDecide.Frontend.BVDecide
 import Lean.Language.Lean
+import Cli
 
 import Leanwuzla.Parser
 
 open Lean
-
-register_option leanwuzla.parseOnly : Bool := {
-  defValue := false
-  descr    := "only parse the SMT2 file and type-check the generated Lean expression"
-}
 
 private partial def getIntrosSize (e : Expr) : Nat :=
   go 0 e
@@ -34,16 +30,49 @@ def _root_.Lean.MVarId.introsP (mvarId : MVarId) : MetaM (Array FVarId × MVarId
   else
     mvarId.introNP n
 
+def parseSmt2File (path : System.FilePath) : MetaM Expr := do
+  let query ← IO.FS.readFile path
+  ofExcept (Parser.parseSmt2Query query)
+
+structure Context where
+  acNf : Bool
+  parseOnly : Bool
+  timeout : Nat
+  input : String
+  maxSteps : Nat
+
+abbrev SolverM := ReaderT Context MetaM
+
+namespace SolverM
+
+def getAcNf : SolverM Bool := return (← read).acNf
+def getParseOnly : SolverM Bool := return (← read).parseOnly
+def getTimeout : SolverM Nat := return (← read).timeout
+def getInput : SolverM String := return (← read).input
+def getMaxSteps : SolverM Nat := return (← read).maxSteps
+
+def run (x : SolverM α) (ctx : Context) (coreContext : Core.Context) (coreState : Core.State) :
+    IO α := do
+  let (res, _, _) ← ReaderT.run x ctx |> (Meta.MetaM.toIO · coreContext coreState)
+  return res
+
+end SolverM
+
 open Elab in
-def decide (type : Expr) : MetaM Unit := do
+def decideSmt (type : Expr) : SolverM UInt32 := do
   let mv ← Meta.mkFreshExprMVar type
   let (_, mv') ← mv.mvarId!.introsP
-  trace[debug] "{mv'}"
+  trace[Meta.Tactic.bv] m!"Working on goal: {mv'}"
   try
     mv'.withContext $ IO.FS.withTempFile fun _ lratFile => do
       let startTime ← IO.monoMsNow
-      let cfg ← (Tactic.BVDecide.Frontend.TacticContext.new lratFile).run' { declName? := `lrat }
-      discard <| Tactic.BVDecide.Frontend.bvDecide mv' cfg
+      let cfg := {
+        timeout := ← SolverM.getTimeout
+        acNf := ← SolverM.getAcNf
+        maxSteps := ← SolverM.getMaxSteps
+      }
+      let ctx ← (Tactic.BVDecide.Frontend.TacticContext.new lratFile cfg).run' { declName? := `lrat }
+      discard <| Tactic.BVDecide.Frontend.bvDecide mv' ctx
       let endTime ← IO.monoMsNow
       logInfo m!"bv_decide took {endTime - startTime}ms"
   catch e =>
@@ -53,20 +82,23 @@ def decide (type : Expr) : MetaM Unit := do
        message.startsWith "None of the hypotheses are in the supported BitVec fragment" then
       -- We fully support SMT-LIB v2.6. Getting the above error message means
       -- the goal was reduced to `False` with only `True` as an assumption.
-      IO.println "sat"
-      return
+      logInfo "sat"
+      return (0 : UInt32)
     else
-      throwError "Error: {e.toMessageData}"
+      logError m!"Error: {e.toMessageData}"
+      return (1 : UInt32)
   let value ← instantiateExprMVars mv
   let r := (← getEnv).addDecl (← getOptions) (.thmDecl { name := ← Lean.mkAuxName `thm 1, levelParams := [], type, value })
   match r with
   | .error e =>
-    throwError m!"Error: {e.toMessageData (← getOptions)}"
+    logError m!"Error: {e.toMessageData (← getOptions)}"
+    return 1
   | .ok env =>
     setEnv env
-    IO.println "unsat"
+    logInfo "unsat"
+    return 0
 
-def typeCheck (e : Expr) : MetaM Unit := do
+def typeCheck (e : Expr) : SolverM UInt32 := do
   let defn := .defnDecl {
     name := ← Lean.mkAuxName `def 1
     levelParams := []
@@ -76,48 +108,94 @@ def typeCheck (e : Expr) : MetaM Unit := do
     safety := .safe
   }
   let r := (← getEnv).addDecl (← getOptions) defn
-  let .error e := r | return
-  throwError m!"Error: {e.toMessageData (← getOptions)}"
+  let .error e := r | return 0
+  logError m!"Error: {e.toMessageData (← getOptions)}"
+  return 1
 
-def parseSmt2File (path : System.FilePath) : MetaM Expr := do
-  let query ← IO.FS.readFile path
-  ofExcept (Parser.parseSmt2Query query)
+def parseAndDecideSmt2File : SolverM UInt32 := do
+  try
+    let goalType ← parseSmt2File (← SolverM.getInput)
+    if ← SolverM.getParseOnly then
+      typeCheck goalType
+    else
+      decideSmt goalType
+  finally
+    printTraces
+    Lean.Language.reportMessages (← Core.getMessageLog) (← getOptions)
 
-def parseAndDecideSmt2File (path : System.FilePath) : MetaM Unit := do
-  let type ← parseSmt2File path
-  if (← getOptions).getBool `leanwuzla.parseOnly then
-    typeCheck type
-  else
-    decide type
+section Cli
 
-open Elab Command in
-def elabParseSmt2File (path : System.FilePath) : CommandElabM Unit := do
-  runTermElabM fun _ => do
-  let e ← parseSmt2File path
-  trace[debug] "{e}"
+open Cli
 
-open Elab Command in
-def elabParseAndDecideSmt2File (path : System.FilePath) : CommandElabM Unit := do
-  runTermElabM fun _ => parseAndDecideSmt2File path
-
-def parseOptions (args : List String) : IO (Options × List String) := do
-  let (opts, args) := go {} args
-  return (← Language.Lean.reparseOptions opts, args)
-where
-  go (opts : Options) : List String → (Options × List String)
-    | "-D" :: arg :: args =>
-      if let [name, value] := arg.splitOn "=" then
-        let opts := opts.set name.toName value
-        go opts args
-      else
-        (opts, args)
-    | args => (opts, args)
-
-unsafe def main (args : List String) : IO Unit := do
+unsafe def runLeanwuzlaCmd (p : Parsed) : IO UInt32 := do
+  let options := argsToOpts p
+  let context := argsToContext p
   Lean.initSearchPath (← Lean.findSysroot)
-  let (opts, args) ← parseOptions args
-  let [path] := args
-    | throw (.userError "usage: lake exe leanwuzla [-D name=value] /path/to/file.smt2")
   withImportModules #[`Std.Tactic.BVDecide, `Leanwuzla.Aux] {} 0 fun env => do
-    _ ← Meta.MetaM.toIO (parseAndDecideSmt2File path)
-      { fileName := "leanwuzla", fileMap := default, options := opts } { env := env }
+    let coreContext := { fileName := "leanwuzla", fileMap := default, options }
+    let coreState := { env }
+    SolverM.run parseAndDecideSmt2File context coreContext coreState
+where
+  argsToOpts (p : Parsed) : Options := Id.run do
+    let mut opts := Options.empty
+
+    if p.hasFlag "verbose" then
+      opts :=
+        opts
+          |>.setBool `trace.Meta.Tactic.bv true
+          |>.setBool `trace.Meta.Tactic.sat true
+          |>.setBool `trace.profiler true
+
+    if p.hasFlag "vsimp" then
+      opts :=
+        opts
+          |>.setBool `trace.Meta.Tactic.simp true
+
+    opts := opts.setNat `maxHeartbeats <| p.flag! "maxHeartbeats" |>.as! Nat
+    opts := opts.setNat `maxRecDepth <| p.flag! "maxRecDepth" |>.as! Nat
+    opts := opts.setNat `trace.profiler.threshold <| p.flag! "pthreshold" |>.as! Nat
+
+    return opts
+
+  argsToContext (p : Parsed) : Context :=
+    {
+      acNf := p.hasFlag "acNf"
+      parseOnly := p.hasFlag "parseOnly"
+      timeout := p.flag! "timeout" |>.as! Nat
+      input := p.positionalArg! "input" |>.as! String
+      maxSteps := p.flag! "maxSteps" |>.as! Nat
+    }
+
+unsafe def leanwuzlaCmd : Cmd := `[Cli|
+  leanwuzla VIA runLeanwuzlaCmd; ["0.1.0"]
+  "Run LeanSAT as an SMT solver on an SMTLIB2 file."
+
+  FLAGS:
+    v, verbose; "Print profiler trace output from LeanSAT."
+    acnf; "Activate the normalisation pass up to commutatitvity."
+    parseOnly; "Only parse and exit right away."
+    timeout : Nat; "Set the parser timeout in seconds."
+
+    maxHeartbeats : Nat; "Set the maxHeartbeats."
+    maxRecDepth : Nat; "Set the maxRecDepth."
+    pthreshold : Nat; "The timing threshold for profiler output."
+    maxSteps : Nat; "Set the maximum number of simplification steps."
+    vsimp; "Print the profiler trace output from simp."
+
+  ARGS:
+    input : String; "Path to the smt2 file to work on"
+
+  EXTENSIONS:
+    defaultValues! #[
+      ("timeout", "10"),
+      ("maxHeartbeats", toString maxHeartbeats.defValue),
+      ("maxRecDepth", toString maxRecDepth.defValue),
+      ("pthreshold", toString trace.profiler.threshold.defValue),
+      ("maxSteps", toString Lean.Meta.Simp.defaultMaxSteps)
+    ]
+]
+
+end Cli
+
+unsafe def main (args : List String) : IO UInt32 := do
+  leanwuzlaCmd.validate args

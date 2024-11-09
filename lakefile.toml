@@ -13,3 +13,8 @@ name = "Leanwuzla"
 name = "leanwuzla"
 root = "Main"
 supportInterpreter = true
+
+[[require]]
+scope = "leanprover"
+name = "Cli"
+rev = "nightly"
