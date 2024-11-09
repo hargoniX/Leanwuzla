@@ -5,16 +5,18 @@ Authors: Henrik Böving
 -/
 import Lean.Elab.Tactic.BVDecide.Frontend.BVDecide
 
+open Lean.Parser.Tactic
+
 /--
 Invoke Bitwuzla on an SMT-fied version of a bitvector goal to see if it holds or not.
 Does not generate a proof term.
 -/
-syntax (name := bvBitwuzla) "bv_bitwuzla" (str)? : tactic
+syntax (name := bvBitwuzla) "bv_bitwuzla" optConfig (str)? : tactic
 
 /--
 Compare the performance of `bv_decide` and `bv_bitwuzla`.
 -/
-syntax (name := bvCompare) "bv_compare" (str)? : tactic
+syntax (name := bvCompare) "bv_compare" optConfig (str)? : tactic
 
 namespace Lean.Elab.Tactic.BVDecide
 namespace Frontend
@@ -212,7 +214,7 @@ def bitwuzlaCounterExample : String := "Bitwuzla found a counter example"
 def bitwuzlaSuccess : String := "Bitwuzla thinks it's right but can't trust the wuzla!"
 
 def bitwuzla (g : MVarId) (reflectionResult : ReflectionResult) (atomsAssignment : Std.HashMap Nat (Nat × Expr × Bool))
-    (solverPath : System.FilePath) :
+    (solverPath : System.FilePath) (cfg : BVDecideConfig) :
     MetaM (Except CounterExample UnsatProver.Result) := do
   let smt := toSMT reflectionResult.bvExpr atomsAssignment
   trace[Meta.Tactic.bv] s!"Encoded as SMT: {smt}"
@@ -221,18 +223,17 @@ def bitwuzla (g : MVarId) (reflectionResult : ReflectionResult) (atomsAssignment
       handle.putStr smt
       handle.flush
       withTraceNode `bv (fun _ => return "Proving with bitwuzla") do
-        let opts ← getOptions
-        let timeout := sat.timeout.get opts
-        smtQuery solverPath path timeout
+        smtQuery solverPath path cfg.timeout
   match res with
   | .sat .. => return .error ⟨g, {}, #[]⟩
   | .unsat => return .ok ⟨mkApp (mkConst ``bitwuzlaCorrect) (toExpr reflectionResult.bvExpr), ""⟩
 
-def bvBitwuzla (g : MVarId) (solverPath : System.FilePath) : MetaM (Except CounterExample Unit) := do
-  let some g ← Normalize.bvNormalize g | return .ok ()
+def bvBitwuzla (g : MVarId) (solverPath : System.FilePath) (cfg : BVDecideConfig) :
+    MetaM (Except CounterExample Unit) := do
+  let some g ← Normalize.bvNormalize g cfg | return .ok ()
   let unsatProver : UnsatProver := fun g reflectionResult atomsAssignment => do
     withTraceNode `bv (fun _ => return "Preparing LRAT reflection term") do
-      bitwuzla g reflectionResult atomsAssignment solverPath
+      bitwuzla g reflectionResult atomsAssignment solverPath cfg
   match ← closeWithBVReflection g unsatProver with
   | .ok .. => return .ok ()
   | .error err => return .error err
@@ -240,14 +241,16 @@ def bvBitwuzla (g : MVarId) (solverPath : System.FilePath) : MetaM (Except Count
 
 @[tactic bvBitwuzla]
 def evalBvBitwuzla : Tactic := fun
-  | `(tactic| bv_bitwuzla $solverPath:str) => do
+  | `(tactic| bv_bitwuzla $cfg:optConfig $solverPath:str) => do
+    let cfg ← elabBVDecideConfig cfg
     liftMetaFinishingTactic fun g => do
-      match ← bvBitwuzla g solverPath.getString with
+      match ← bvBitwuzla g solverPath.getString cfg with
       | .ok .. => throwError bitwuzlaSuccess
       | .error .. => throwError bitwuzlaCounterExample
-  | `(tactic| bv_bitwuzla) => do
+  | `(tactic| bv_bitwuzla $cfg:optConfig) => do
+    let cfg ← elabBVDecideConfig cfg
     liftMetaFinishingTactic fun g => do
-      match ← bvBitwuzla g "bitwuzla" with
+      match ← bvBitwuzla g "bitwuzla" cfg with
       | .ok .. => throwError bitwuzlaSuccess
       | .error .. => throwError bitwuzlaCounterExample
   | _ => throwUnsupportedSyntax
@@ -374,10 +377,11 @@ where
       | .withContext _ msg => go #[msg]
       | _ => continue
 
-partial def evalBitwuzla (g : MVarId) (solverPath : System.FilePath) : MetaM BitwuzlaPerf := do
+partial def evalBitwuzla (g : MVarId) (arg : System.FilePath × BVDecideConfig) : MetaM BitwuzlaPerf := do
+  let (solverPath, cfg) := arg
   g.withContext do
     let t1 ← IO.monoNanosNow
-    let res ← bvBitwuzla g solverPath
+    let res ← bvBitwuzla g solverPath cfg
     let t2 ← IO.monoNanosNow
     let overallTime := (Float.ofNat <| t2 - t1) / 1000000.0
     let (_, solvingContextTime) ← parseBitwuzlaTrace ((← getTraces).toArray.map TraceElem.msg) |>.run 0
@@ -410,9 +414,9 @@ def evalLeanSat (g : MVarId) (cfg : TacticContext) : MetaM LeansatPerf := do
     | .error _ =>
       return .failure overallTime (← parseFailureTrace traces)
 
-def bvCompare (g : MVarId) (solverPath : System.FilePath) (cfg : TacticContext) : MetaM Comparision := do
-  let bitwuzlaPerf ← measure evalBitwuzla g solverPath
-  let leansatPerf ← measure evalLeanSat g cfg
+def bvCompare (g : MVarId) (solverPath : System.FilePath) (ctx : TacticContext) : MetaM Comparision := do
+  let bitwuzlaPerf ← measure evalBitwuzla g (solverPath, ctx.config)
+  let leansatPerf ← measure evalLeanSat g ctx
 
   return { bitwuzlaPerf , leansatPerf }
 where
@@ -438,17 +442,19 @@ where
 
 @[tactic bvCompare]
 def evalBvCompare : Tactic := fun
-  | `(tactic| bv_compare $solverPath:str) => do
+  | `(tactic| bv_compare $cfg:optConfig $solverPath:str) => do
+    let cfg ← elabBVDecideConfig cfg
     IO.FS.withTempFile fun _ lratFile => do
-      let cfg ← TacticContext.new lratFile
+      let ctx ← TacticContext.new lratFile cfg
       let g ← getMainGoal
-      let res ← bvCompare g solverPath.getString cfg
+      let res ← bvCompare g solverPath.getString ctx
       logInfo <| toString res
-  | `(tactic| bv_compare) => do
+  | `(tactic| bv_compare $cfg:optConfig) => do
+    let cfg ← elabBVDecideConfig cfg
     IO.FS.withTempFile fun _ lratFile => do
-      let cfg ← TacticContext.new lratFile
+      let ctx ← TacticContext.new lratFile cfg
       let g ← getMainGoal
-      let res ← bvCompare g "bitwuzla" cfg
+      let res ← bvCompare g "bitwuzla" ctx
       logInfo <| toString res
   | _ => throwUnsupportedSyntax
 
