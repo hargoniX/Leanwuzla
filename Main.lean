@@ -65,7 +65,6 @@ def decideSmt (type : Expr) : SolverM UInt32 := do
   trace[Meta.Tactic.bv] m!"Working on goal: {mv'}"
   try
     mv'.withContext $ IO.FS.withTempFile fun _ lratFile => do
-      let startTime ← IO.monoMsNow
       let cfg := {
         timeout := ← SolverM.getTimeout
         acNf := ← SolverM.getAcNf
@@ -73,8 +72,6 @@ def decideSmt (type : Expr) : SolverM UInt32 := do
       }
       let ctx ← (Tactic.BVDecide.Frontend.TacticContext.new lratFile cfg).run' { declName? := `lrat }
       discard <| Tactic.BVDecide.Frontend.bvDecide mv' ctx
-      let endTime ← IO.monoMsNow
-      logInfo m!"bv_decide took {endTime - startTime}ms"
   catch e =>
     -- TODO: improve handling of sat cases. This is a temporary workaround.
     let message ← e.toMessageData.toString
@@ -174,7 +171,7 @@ unsafe def leanwuzlaCmd : Cmd := `[Cli|
     v, verbose; "Print profiler trace output from LeanSAT."
     acnf; "Activate the normalisation pass up to commutatitvity."
     parseOnly; "Only parse and exit right away."
-    timeout : Nat; "Set the parser timeout in seconds."
+    timeout : Nat; "Set the SAT solver timeout in seconds."
 
     maxHeartbeats : Nat; "Set the maxHeartbeats."
     maxRecDepth : Nat; "Set the maxRecDepth."
