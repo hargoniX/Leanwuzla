@@ -505,7 +505,9 @@ def parseQuery (query : Query) : ParserM Expr := do
   try
     withDecls query.decls <| withDefs query.defs do
       let conjs ← query.asserts.mapM parseAssert
-      let p := conjs.tail.foldl (mkApp2 (.const ``and [])) conjs.head!
+      let p := if h : 0 < conjs.length
+        then conjs.tail.foldl (mkApp2 (.const ``and [])) conjs[0]
+        else .const ``true []
       return mkApp3 (.const ``Eq [levelOne]) (.const ``Bool []) (.app (.const ``not []) p) (.const ``true [])
   catch e =>
     throw m!"Error: {e}\nfailed to parse query {repr (← get)}"
