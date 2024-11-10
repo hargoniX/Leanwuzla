@@ -151,6 +151,7 @@ where
     opts := opts.setNat `maxHeartbeats <| p.flag! "maxHeartbeats" |>.as! Nat
     opts := opts.setNat `maxRecDepth <| p.flag! "maxRecDepth" |>.as! Nat
     opts := opts.setNat `trace.profiler.threshold <| p.flag! "pthreshold" |>.as! Nat
+    opts := opts.setNat `exponentiation.threshold <| p.flag! "expthreshold" |>.as! Nat
 
     return opts
 
@@ -175,8 +176,9 @@ unsafe def leanwuzlaCmd : Cmd := `[Cli|
 
     maxHeartbeats : Nat; "Set the maxHeartbeats."
     maxRecDepth : Nat; "Set the maxRecDepth."
-    pthreshold : Nat; "The timing threshold for profiler output."
+    expthreshold : Nat; "The threshold for maximum exponents. Useful to limit runaway computation."
     maxSteps : Nat; "Set the maximum number of simplification steps."
+    pthreshold : Nat; "The timing threshold for profiler output."
     vsimp; "Print the profiler trace output from simp."
 
   ARGS:
@@ -188,7 +190,8 @@ unsafe def leanwuzlaCmd : Cmd := `[Cli|
       ("maxHeartbeats", toString maxHeartbeats.defValue),
       ("maxRecDepth", toString maxRecDepth.defValue),
       ("pthreshold", toString trace.profiler.threshold.defValue),
-      ("maxSteps", toString Lean.Meta.Simp.defaultMaxSteps)
+      ("maxSteps", toString Lean.Meta.Simp.defaultMaxSteps),
+      ("expthreshold", toString exponentiation.threshold.defValue)
     ]
 ]
 
