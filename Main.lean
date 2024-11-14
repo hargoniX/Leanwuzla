@@ -148,6 +148,11 @@ where
         opts
           |>.setBool `trace.Meta.Tactic.simp true
 
+    if p.hasFlag "skipLrat" then
+      opts :=
+        opts
+          |>.setBool `debug.skipKernelTC true
+
     opts := opts.setNat `maxHeartbeats <| p.flag! "maxHeartbeats" |>.as! Nat
     opts := opts.setNat `maxRecDepth <| p.flag! "maxRecDepth" |>.as! Nat
     opts := opts.setNat `trace.profiler.threshold <| p.flag! "pthreshold" |>.as! Nat
@@ -180,6 +185,7 @@ unsafe def leanwuzlaCmd : Cmd := `[Cli|
     maxSteps : Nat; "Set the maximum number of simplification steps."
     pthreshold : Nat; "The timing threshold for profiler output."
     vsimp; "Print the profiler trace output from simp."
+    skipLrat; "Skip checking the LRAT certificate of the SAT proof."
 
   ARGS:
     input : String; "Path to the smt2 file to work on"
