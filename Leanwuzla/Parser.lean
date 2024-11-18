@@ -112,7 +112,7 @@ def smtSymbolToName (s : String) : Name :=
   else
     s.toName
 
-partial def parseSort : Sexp → ParserM Expr
+def parseSort : Sexp → ParserM Expr
   | sexp!{Bool} =>
     return mkBool
   | sexp!{(_ BitVec {w})} =>
@@ -150,20 +150,18 @@ where
       let p := ps.dropLast.foldr (mkApp2 (.const ``implies [])) ps.getLast!
       return (mkBool, p)
     | sexp!{(and ...{ps})} =>
-      return (mkBool, ← leftAssocOp (.const ``and []) ps)
+      leftAssocOpBool (.const ``and []) ps
     | sexp!{(or ...{ps})} =>
-      return (mkBool, ← leftAssocOp (.const ``or []) ps)
+      leftAssocOpBool (.const ``or []) ps
     | sexp!{(xor ...{ps})} =>
-      return (mkBool, ← leftAssocOp (.const ``xor []) ps)
+      leftAssocOpBool (.const ``xor []) ps
     | sexp!{(= {x} {y})} =>
       let (α, x) ← parseTerm x
       let (_, y) ← parseTerm y
       let hα := if α == mkBool then mkInstBEqBool else mkInstBEqBitVec (getBitVecWidth α)
       return (mkBool, mkApp4 (.const ``BEq.beq [levelZero]) α hα x y)
     | sexp!{(distinct ...{xs})} =>
-      let (α, _) ← parseTerm xs.head!
-      let hα := if α == mkBool then mkInstBEqBool else mkInstBEqBitVec (getBitVecWidth α)
-      return (mkBool, ← pairwiseDistinct α hα xs)
+      pairwiseDistinct xs
     | sexp!{(ite {c} {t} {e})} =>
       let (_, c) ← parseTerm c
       let (α, t) ← parseTerm t
@@ -178,18 +176,12 @@ where
         return (w + v, mkApp2 (mkBitVecAppend w v) acc x)
       let (w, acc) ← xs.tail.foldlM f (w, acc)
       return (mkBitVec w, acc)
-    | sexp!{(bvand ...{ps})} =>
-      let (α, _) ← parseTerm ps.head!
-      let w := getBitVecWidth α
-      return (α, ← leftAssocOp (mkBitVecAnd w) ps)
-    | sexp!{(bvor ...{ps})} =>
-      let (α, _) ← parseTerm ps.head!
-      let w := getBitVecWidth α
-      return (α, ← leftAssocOp (mkBitVecOr w) ps)
-    | sexp!{(bvxor ...{ps})} =>
-      let (α, _) ← parseTerm ps.head!
-      let w := getBitVecWidth α
-      return (α, ← leftAssocOp (mkBitVecXor w) ps)
+    | sexp!{(bvand ...{xs})} =>
+      leftAssocOpBitVec mkBitVecAnd xs
+    | sexp!{(bvor ...{xs})} =>
+      leftAssocOpBitVec mkBitVecOr xs
+    | sexp!{(bvxor ...{xs})} =>
+      leftAssocOpBitVec mkBitVecXor xs
     | sexp!{(bvnot {x})} =>
       let (α, x) ← parseTerm x
       let w := getBitVecWidth α
@@ -214,18 +206,12 @@ where
       let (_, y) ← parseTerm y
       let w := getBitVecWidth α
       return (mkBitVec 1, mkApp3 (.const ``BitVec.compare []) (mkNatLit w) x y)
-    | sexp!{(bvmul ...{ps})} =>
-      let (α, _) ← parseTerm ps.head!
-      let w := getBitVecWidth α
-      return (α, ← leftAssocOp (mkBitVecMul w) ps)
-    | sexp!{(bvadd ...{ps})} =>
-      let (α, _) ← parseTerm ps.head!
-      let w := getBitVecWidth α
-      return (α, ← leftAssocOp (mkBitVecAdd w) ps)
-    | sexp!{(bvsub ...{ps})} =>
-      let (α, _) ← parseTerm ps.head!
-      let w := getBitVecWidth α
-      return (α, ← leftAssocOp (mkBitVecSub w) ps)
+    | sexp!{(bvmul ...{xs})} =>
+      leftAssocOpBitVec mkBitVecMul xs
+    | sexp!{(bvadd ...{xs})} =>
+      leftAssocOpBitVec mkBitVecAdd xs
+    | sexp!{(bvsub ...{xs})} =>
+      leftAssocOpBitVec mkBitVecSub xs
     | sexp!{(bvneg {x})} =>
       let (α, x) ← parseTerm x
       let w := getBitVecWidth α
@@ -390,15 +376,22 @@ where
         none
     | _ =>
       none
-  leftAssocOp (op : Expr) (as : List Sexp) : ParserM Expr := do
+  leftAssocOpBool (op : Expr) (as : List Sexp) : ParserM (Expr × Expr) := do
     let as ← as.mapM (fun a => return (← parseTerm a).snd)
-    return as.tail.foldl (mkApp2 op) as.head!
-  pairwiseDistinct (α : Expr) (hα : Expr) (as : List Sexp) : ParserM Expr := do
+    return (mkBool, as.tail.foldl (mkApp2 op) as.head!)
+  leftAssocOpBitVec (op : Nat → Expr) (as : List Sexp) : ParserM (Expr × Expr) := do
+    let (α, a) ← parseTerm as.head!
+    let op := op (getBitVecWidth α)
+    -- Do not reparse a!
+    let as ← as.tail.mapM (fun a => return (← parseTerm a).snd)
+    return (α, as.foldl (mkApp2 op) a)
+  pairwiseDistinct (as : List Sexp) : ParserM (Expr × Expr) := do
     if h : as.length < 2 then
       throw m!"Error: expected at least two arguments for `distinct`"
     else
-      let (_, as0) ← parseTerm as[0]
+      let (α, as0) ← parseTerm as[0]
       let (_, as1) ← parseTerm as[1]
+      let hα := if α == mkBool then mkInstBEqBool else mkInstBEqBitVec (getBitVecWidth α)
       let mut acc : Expr := mkApp4 (.const ``bne [levelZero]) α hα as0 as1
       for hi : i in [2:as.length] do
         let (_, asi) ← parseTerm as[i]
@@ -408,7 +401,7 @@ where
           let (_, asi) ← parseTerm as[i]
           let (_, asj) ← parseTerm as[j]
           acc :=  mkApp2 (.const ``and []) acc (mkApp4 (.const ``bne [levelZero]) α hα asi asj)
-      return acc
+      return (mkBool, acc)
   parseNestedBindings (bindings : List (List Sexp)) : ParserM (List (Sexp × Name × Expr × Expr)) := do
     let bindings ← bindings.mapM parseParallelBindings
     return bindings.flatten
