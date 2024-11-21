@@ -40,16 +40,25 @@ structure Context where
   timeout : Nat
   input : String
   maxSteps : Nat
+  disableAndFlatten : Bool
+  disableEmbeddedConstraintSubst : Bool
 
 abbrev SolverM := ReaderT Context MetaM
 
 namespace SolverM
 
-def getAcNf : SolverM Bool := return (← read).acNf
 def getParseOnly : SolverM Bool := return (← read).parseOnly
-def getTimeout : SolverM Nat := return (← read).timeout
 def getInput : SolverM String := return (← read).input
-def getMaxSteps : SolverM Nat := return (← read).maxSteps
+
+def getBVDecideConfig : SolverM Elab.Tactic.BVDecide.Frontend.BVDecideConfig := do
+  let ctx ← read
+  return {
+    timeout := ctx.timeout
+    acNf := ctx.acNf
+    embeddedConstraintSubst := !ctx.disableEmbeddedConstraintSubst
+    andFlattening := !ctx.disableAndFlatten
+    maxSteps := ctx.maxSteps
+  }
 
 def run (x : SolverM α) (ctx : Context) (coreContext : Core.Context) (coreState : Core.State) :
     IO α := do
@@ -65,11 +74,7 @@ def decideSmt (type : Expr) : SolverM UInt32 := do
   trace[Meta.Tactic.bv] m!"Working on goal: {mv'}"
   try
     mv'.withContext $ IO.FS.withTempFile fun _ lratFile => do
-      let cfg := {
-        timeout := ← SolverM.getTimeout
-        acNf := ← SolverM.getAcNf
-        maxSteps := ← SolverM.getMaxSteps
-      }
+      let cfg ← SolverM.getBVDecideConfig
       let ctx ← (Tactic.BVDecide.Frontend.TacticContext.new lratFile cfg).run' { declName? := `lrat }
       discard <| Tactic.BVDecide.Frontend.bvDecide mv' ctx
   catch e =>
@@ -167,6 +172,8 @@ where
       timeout := p.flag! "timeout" |>.as! Nat
       input := p.positionalArg! "input" |>.as! String
       maxSteps := p.flag! "maxSteps" |>.as! Nat
+      disableAndFlatten := p.hasFlag "disableAndFlatten"
+      disableEmbeddedConstraintSubst := p.hasFlag "disableEmbeddedConstraintSubst"
     }
 
 unsafe def leanwuzlaCmd : Cmd := `[Cli|
@@ -186,6 +193,8 @@ unsafe def leanwuzlaCmd : Cmd := `[Cli|
     pthreshold : Nat; "The timing threshold for profiler output."
     vsimp; "Print the profiler trace output from simp."
     skipLrat; "Skip checking the LRAT certificate of the SAT proof."
+    disableAndFlatten; "Disable the and flattening pass."
+    disableEmbeddedConstraintSubst; "Disable the embedded constraints substitution pass."
 
   ARGS:
     input : String; "Path to the smt2 file to work on"
