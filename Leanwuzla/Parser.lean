@@ -18,6 +18,9 @@ abbrev ParserM := StateT Parser.State (Except MessageData)
 
 namespace Parser
 
+private def mkLetFun (n : Name) (t v tb b : Expr) : Expr :=
+  mkApp4 (.const ``letFun [1, 1]) t (.lam .anonymous t tb .default) v (.lam n t b .default)
+
 private def mkBool : Expr :=
   .const ``Bool []
 
@@ -30,77 +33,77 @@ private def getBitVecWidth (α : Expr) :=
   | _ => panic! "expected BitVec type"
 
 private def mkInstBEqBool : Expr :=
-  mkApp2 (.const ``instBEqOfDecidableEq [levelZero]) mkBool
+  mkApp2 (.const ``instBEqOfDecidableEq [0]) mkBool
          (.const ``instDecidableEqBool [])
 
 private def mkInstBEqBitVec (w : Nat) : Expr :=
-  mkApp2 (.const ``instBEqOfDecidableEq [levelZero]) (mkBitVec w)
+  mkApp2 (.const ``instBEqOfDecidableEq [0]) (mkBitVec w)
          (.app (.const ``instDecidableEqBitVec []) (mkNatLit w))
 
 private def mkBitVecAppend (w v : Nat) : Expr :=
-  mkApp4 (.const ``HAppend.hAppend [levelZero, levelZero, levelZero])
+  mkApp4 (.const ``HAppend.hAppend [0, 0, 0])
          (mkBitVec w) (mkBitVec v) (mkBitVec (w + v))
          (mkApp2 (.const ``BitVec.instHAppendHAddNat []) (mkNatLit w) (mkNatLit v))
 
 private def mkBitVecAnd (w : Nat) : Expr :=
-  mkApp4 (.const ``HAnd.hAnd [levelZero, levelZero, levelZero])
+  mkApp4 (.const ``HAnd.hAnd [0, 0, 0])
          (mkBitVec w) (mkBitVec w) (mkBitVec w)
-         (mkApp2 (.const ``instHAndOfAndOp [levelZero]) (mkBitVec w)
+         (mkApp2 (.const ``instHAndOfAndOp [0]) (mkBitVec w)
                  (.app (.const ``BitVec.instAndOp []) (mkNatLit w)))
 
 private def mkBitVecOr (w : Nat) : Expr :=
-  mkApp4 (.const ``HOr.hOr [levelZero, levelZero, levelZero])
+  mkApp4 (.const ``HOr.hOr [0, 0, 0])
          (mkBitVec w) (mkBitVec w) (mkBitVec w)
-         (mkApp2 (.const ``instHOrOfOrOp [levelZero]) (mkBitVec w)
+         (mkApp2 (.const ``instHOrOfOrOp [0]) (mkBitVec w)
                  (.app (.const ``BitVec.instOrOp []) (mkNatLit w)))
 
 private def mkBitVecXor (w : Nat) : Expr :=
-  mkApp4 (.const ``HXor.hXor [levelZero, levelZero, levelZero])
+  mkApp4 (.const ``HXor.hXor [0, 0, 0])
          (mkBitVec w) (mkBitVec w) (mkBitVec w)
-         (mkApp2 (.const ``instHXorOfXor [levelZero]) (mkBitVec w)
+         (mkApp2 (.const ``instHXorOfXor [0]) (mkBitVec w)
                  (.app (.const ``BitVec.instXor []) (mkNatLit w)))
 
 private def mkBitVecNot (w : Nat) : Expr :=
-  mkApp2 (.const ``Complement.complement [levelZero])
+  mkApp2 (.const ``Complement.complement [0])
          (mkBitVec w)
          (.app (.const ``BitVec.instComplement []) (mkNatLit w))
 
 private def mkBitVecNeg (w : Nat) : Expr :=
-  mkApp2 (.const ``Neg.neg [levelZero])
+  mkApp2 (.const ``Neg.neg [0])
          (mkBitVec w)
          (.app (.const ``BitVec.instNeg []) (mkNatLit w))
 
 private def mkBitVecAdd (w : Nat) : Expr :=
-  mkApp4 (.const ``HAdd.hAdd [levelZero, levelZero, levelZero])
+  mkApp4 (.const ``HAdd.hAdd [0, 0, 0])
          (mkBitVec w) (mkBitVec w) (mkBitVec w)
-         (mkApp2 (.const ``instHAdd [levelZero]) (mkBitVec w)
+         (mkApp2 (.const ``instHAdd [0]) (mkBitVec w)
                  (.app (.const ``BitVec.instAdd []) (mkNatLit w)))
 
 private def mkBitVecSub (w : Nat) : Expr :=
-  mkApp4 (.const ``HSub.hSub [levelZero, levelZero, levelZero])
+  mkApp4 (.const ``HSub.hSub [0, 0, 0])
          (mkBitVec w) (mkBitVec w) (mkBitVec w)
-         (mkApp2 (.const ``instHSub [levelZero]) (mkBitVec w)
+         (mkApp2 (.const ``instHSub [0]) (mkBitVec w)
                  (.app (.const ``BitVec.instSub []) (mkNatLit w)))
 
 private def mkBitVecMul (w : Nat) : Expr :=
-  mkApp4 (.const ``HMul.hMul [levelZero, levelZero, levelZero])
+  mkApp4 (.const ``HMul.hMul [0, 0, 0])
          (mkBitVec w) (mkBitVec w) (mkBitVec w)
-         (mkApp2 (.const ``instHMul [levelZero]) (mkBitVec w)
+         (mkApp2 (.const ``instHMul [0]) (mkBitVec w)
                  (.app (.const ``BitVec.instMul []) (mkNatLit w)))
 
 private def mkBitVecMod (w : Nat) : Expr :=
-  mkApp4 (.const ``HMod.hMod [levelZero, levelZero, levelZero])
+  mkApp4 (.const ``HMod.hMod [0, 0, 0])
          (mkBitVec w) (mkBitVec w) (mkBitVec w)
-         (mkApp2 (.const ``instHMod [levelZero]) (mkBitVec w)
+         (mkApp2 (.const ``instHMod [0]) (mkBitVec w)
                  (.app (.const ``BitVec.instMod []) (mkNatLit w)))
 
 private def mkBitVecShiftLeft (w : Nat) : Expr :=
-  mkApp4 (.const ``HShiftLeft.hShiftLeft [levelZero, levelZero, levelZero])
+  mkApp4 (.const ``HShiftLeft.hShiftLeft [0, 0, 0])
          (mkBitVec w) (mkBitVec w) (mkBitVec w)
          (mkApp2 (.const ``BitVec.instHShiftLeft []) (mkNatLit w) (mkNatLit w))
 
 private def mkBitVecShiftRight (w : Nat) : Expr :=
-  mkApp4 (.const ``HShiftRight.hShiftRight [levelZero, levelZero, levelZero])
+  mkApp4 (.const ``HShiftRight.hShiftRight [0, 0, 0])
          (mkBitVec w) (mkBitVec w) (mkBitVec w)
          (mkApp2 (.const ``BitVec.instHShiftRight []) (mkNatLit w) (mkNatLit w))
 
@@ -134,10 +137,10 @@ where
       let state ← get
       let (bindings, b) := getNestedLetBindingsAndBody [] e
       let bindings ← parseNestedBindings bindings
-      let (t, b) ← parseTerm b
+      let (tb, b) ← parseTerm b
       set state
-      let e := bindings.foldr (fun (_, n, t, v) b => .letE n t v b true) b
-      return (t, e)
+      let e := bindings.foldr (fun (_, n, t, v) b => mkLetFun n t v tb b) b
+      return (tb, e)
     | sexp!{true} =>
       return (mkBool, .const ``true [])
     | sexp!{false} =>
@@ -159,7 +162,7 @@ where
       let (α, x) ← parseTerm x
       let (_, y) ← parseTerm y
       let hα := if α == mkBool then mkInstBEqBool else mkInstBEqBitVec (getBitVecWidth α)
-      return (mkBool, mkApp4 (.const ``BEq.beq [levelZero]) α hα x y)
+      return (mkBool, mkApp4 (.const ``BEq.beq [0]) α hα x y)
     | sexp!{(distinct ...{xs})} =>
       pairwiseDistinct xs
     | sexp!{(ite {c} {t} {e})} =>
@@ -394,15 +397,15 @@ where
       let (α, as0) ← parseTerm as[0]
       let (_, as1) ← parseTerm as[1]
       let hα := if α == mkBool then mkInstBEqBool else mkInstBEqBitVec (getBitVecWidth α)
-      let mut acc : Expr := mkApp4 (.const ``bne [levelZero]) α hα as0 as1
+      let mut acc : Expr := mkApp4 (.const ``bne [0]) α hα as0 as1
       for hi : i in [2:as.length] do
         let (_, asi) ← parseTerm as[i]
-        acc := mkApp2 (.const ``and []) acc (mkApp4 (.const ``bne [levelZero]) α hα as0 asi)
+        acc := mkApp2 (.const ``and []) acc (mkApp4 (.const ``bne [0]) α hα as0 asi)
       for hi : i in [1:as.length] do
         for hj : j in [i + 1:as.length] do
           let (_, asi) ← parseTerm as[i]
           let (_, asj) ← parseTerm as[j]
-          acc :=  mkApp2 (.const ``and []) acc (mkApp4 (.const ``bne [levelZero]) α hα asi asj)
+          acc :=  mkApp2 (.const ``and []) acc (mkApp4 (.const ``bne [0]) α hα asi asj)
       return (mkBool, acc)
   parseNestedBindings (bindings : List (List Sexp)) : ParserM (List (Sexp × Name × Expr × Expr)) := do
     let bindings ← bindings.mapM parseParallelBindings
@@ -458,7 +461,7 @@ def withDefs (defs : List Sexp) (k : ParserM Expr) : ParserM Expr := do
   let defs ← defs.mapM parseDef
   let b ← k
   set state
-  return defs.foldr (fun (_, n, t, v) b => .letE n t v b true) b
+  return defs.foldr (fun (_, n, t, v) b => mkLetFun n t v (.sort 0) b) b
 where
   parseDef (defn : Sexp) : ParserM (Sexp × Name × Expr × Expr) := do
     match defn with
@@ -503,7 +506,7 @@ def parseQuery (query : Query) : ParserM Expr := do
       let p := if h : 0 < conjs.length
         then conjs.tail.foldl (mkApp2 (.const ``and [])) conjs[0]
         else .const ``true []
-      return mkApp3 (.const ``Eq [levelOne]) (.const ``Bool []) (.app (.const ``not []) p) (.const ``true [])
+      return mkApp3 (.const ``Eq [1]) (.const ``Bool []) (.app (.const ``not []) p) (.const ``true [])
   catch e =>
     throw m!"Error: {e}\nfailed to parse query {repr (← get)}"
 
