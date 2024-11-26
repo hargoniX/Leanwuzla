@@ -12,14 +12,10 @@ where
   go (size : Nat) : Expr → Nat
     | .forallE _ _ b _ => go (size + 1) b
     | .mdata _ b       => go size b
-    | e                =>
-      if let some (_, _, _, b) := e.letFun? then
-        go (size + 1) b
-      else
-        size
+    | _                => size
 
 /--
-Introduce as many binders as possible without unfolding definitions and preserve names.
+Introduce only forall binders and preserve names.
 -/
 def _root_.Lean.MVarId.introsP (mvarId : MVarId) : MetaM (Array FVarId × MVarId) := do
   let type ← mvarId.getType
