@@ -91,7 +91,7 @@ where
         | .and => "and"
         | .xor => "xor"
         | .beq => "="
-        | .imp => "=>"
+        | .or => "or"
       pushBinaryOp gateStr (goBVLogical lhs) (goBVLogical rhs)
 
   goBVPred (pred : BVPred) : StateM String Unit := do
