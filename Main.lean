@@ -1,67 +1,15 @@
-import Lean.Elab.Tactic.BVDecide.Frontend.BVDecide
-import Lean.Language.Lean
 import Cli
 
 import Leanwuzla.Parser
+import Leanwuzla.Basic
+import Leanwuzla.NoKernel
 
 open Lean
-
-private partial def getIntrosSize (e : Expr) : Nat :=
-  go 0 e
-where
-  go (size : Nat) : Expr → Nat
-    | .forallE _ _ b _ => go (size + 1) b
-    | .mdata _ b       => go size b
-    | _                => size
-
-/--
-Introduce only forall binders and preserve names.
--/
-def _root_.Lean.MVarId.introsP (mvarId : MVarId) : MetaM (Array FVarId × MVarId) := do
-  let type ← mvarId.getType
-  let type ← instantiateMVars type
-  let n := getIntrosSize type
-  if n == 0 then
-    return (#[], mvarId)
-  else
-    mvarId.introNP n
 
 def parseSmt2File (path : System.FilePath) : MetaM Expr := do
   let query ← IO.FS.readFile path
   ofExcept (Parser.parseSmt2Query query)
 
-structure Context where
-  acNf : Bool
-  parseOnly : Bool
-  timeout : Nat
-  input : String
-  maxSteps : Nat
-  disableAndFlatten : Bool
-  disableEmbeddedConstraintSubst : Bool
-
-abbrev SolverM := ReaderT Context MetaM
-
-namespace SolverM
-
-def getParseOnly : SolverM Bool := return (← read).parseOnly
-def getInput : SolverM String := return (← read).input
-
-def getBVDecideConfig : SolverM Elab.Tactic.BVDecide.Frontend.BVDecideConfig := do
-  let ctx ← read
-  return {
-    timeout := ctx.timeout
-    acNf := ctx.acNf
-    embeddedConstraintSubst := !ctx.disableEmbeddedConstraintSubst
-    andFlattening := !ctx.disableAndFlatten
-    maxSteps := ctx.maxSteps
-  }
-
-def run (x : SolverM α) (ctx : Context) (coreContext : Core.Context) (coreState : Core.State) :
-    IO α := do
-  let (res, _, _) ← ReaderT.run x ctx |> (Meta.MetaM.toIO · coreContext coreState)
-  return res
-
-end SolverM
 
 open Elab in
 def decideSmt (type : Expr) : SolverM UInt32 := do
@@ -86,37 +34,41 @@ def decideSmt (type : Expr) : SolverM UInt32 := do
       logError m!"Error: {e.toMessageData}"
       return (1 : UInt32)
   let value ← instantiateExprMVars mv
-  let r := (← getEnv).addDecl (← getOptions) (.thmDecl { name := ← Lean.mkAuxName `thm 1, levelParams := [], type, value })
-  match r with
-  | .error e =>
-    logError m!"Error: {e.toMessageData (← getOptions)}"
-    return 1
-  | .ok env =>
-    setEnv env
+  try
+    Lean.addDecl (.thmDecl { name := ← Lean.mkAuxName `thm 1, levelParams := [], type, value })
     logInfo "unsat"
     return 0
+  catch e =>
+    logError m!"Error: {e.toMessageData}"
+    return 1
 
 def typeCheck (e : Expr) : SolverM UInt32 := do
-  let defn := .defnDecl {
-    name := ← Lean.mkAuxName `def 1
-    levelParams := []
-    type := .sort .zero
-    value := e
-    hints := .regular 0
-    safety := .safe
-  }
-  let r := (← getEnv).addDecl (← getOptions) defn
-  let .error e := r | return 0
-  logError m!"Error: {e.toMessageData (← getOptions)}"
-  return 1
+  try
+    let defn := .defnDecl {
+      name := ← Lean.mkAuxName `def 1
+      levelParams := []
+      type := .sort .zero
+      value := e
+      hints := .regular 0
+      safety := .safe
+    }
+    Lean.addDecl defn
+    return 0
+  catch e =>
+    logError m!"Error: {e.toMessageData}"
+    return 1
 
 def parseAndDecideSmt2File : SolverM UInt32 := do
   try
     let goalType ← parseSmt2File (← SolverM.getInput)
     if ← SolverM.getParseOnly then
+      logInfo m!"Goal:\n{goalType}"
       typeCheck goalType
     else
-      decideSmt goalType
+      if ← SolverM.getKernelDisabled then
+        decideSmtNoKernel goalType
+      else
+        decideSmt goalType
   finally
     printTraces
     Lean.Language.reportMessages (← Core.getMessageLog) (← getOptions)
@@ -142,17 +94,23 @@ where
         opts
           |>.setBool `trace.Meta.Tactic.bv true
           |>.setBool `trace.Meta.Tactic.sat true
-          |>.setBool `trace.profiler true
+          --|>.setBool `trace.profiler true
 
     if p.hasFlag "vsimp" then
       opts :=
         opts
           |>.setBool `trace.Meta.Tactic.simp true
 
-    if p.hasFlag "skipLrat" then
+    if p.hasFlag "disableKernel" then
       opts :=
         opts
           |>.setBool `debug.skipKernelTC true
+
+    if p.hasFlag "parseOnly" then
+       opts :=
+        opts
+          |>.setNat `pp.maxSteps 10000000000
+          |>.setNat `pp.deepTerms.threshold 100
 
     opts := opts.setNat `maxHeartbeats <| p.flag! "maxHeartbeats" |>.as! Nat
     opts := opts.setNat `maxRecDepth <| p.flag! "maxRecDepth" |>.as! Nat
@@ -170,6 +128,7 @@ where
       maxSteps := p.flag! "maxSteps" |>.as! Nat
       disableAndFlatten := p.hasFlag "disableAndFlatten"
       disableEmbeddedConstraintSubst := p.hasFlag "disableEmbeddedConstraintSubst"
+      disableKernel := p.hasFlag "disableKernel"
     }
 
 unsafe def leanwuzlaCmd : Cmd := `[Cli|
@@ -188,9 +147,9 @@ unsafe def leanwuzlaCmd : Cmd := `[Cli|
     maxSteps : Nat; "Set the maximum number of simplification steps."
     pthreshold : Nat; "The timing threshold for profiler output."
     vsimp; "Print the profiler trace output from simp."
-    skipLrat; "Skip checking the LRAT certificate of the SAT proof."
     disableAndFlatten; "Disable the and flattening pass."
     disableEmbeddedConstraintSubst; "Disable the embedded constraints substitution pass."
+    disableKernel; "Disable the Lean kernel, that is only verify the LRAT cert, no reflection proof"
 
   ARGS:
     input : String; "Path to the smt2 file to work on"
