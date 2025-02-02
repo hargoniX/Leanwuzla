@@ -44,7 +44,7 @@ def decideSmtNoKernel (type : Expr) : SolverM UInt32 := do
         let aigSize := entry.aig.decls.size
         trace[Meta.Tactic.bv] s!"AIG has {aigSize} nodes."
 
-        let (cnf, map) ←
+        let (cnf, _) ←
           withTraceNode `sat (fun _ => return "Converting AIG to CNF") do
             -- lazyPure to prevent compiler lifting
             IO.lazyPure (fun _ =>
@@ -69,7 +69,7 @@ def decideSmtNoKernel (type : Expr) : SolverM UInt32 := do
           else
             logInfo "Error: Failed to check LRAT cert"
             return (1 : UInt32)
-        | .error assignment =>
+        | .error .. =>
           logInfo "sat"
           return (0 : UInt32)
       | none =>
