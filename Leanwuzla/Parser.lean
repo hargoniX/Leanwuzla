@@ -130,8 +130,7 @@ partial def parseTerm (s : Sexp) : ParserM (Expr × Expr) := do
     throw m!"Error: {e}\nfailed to parse term {s}"
 where
   go (e : Sexp) : ParserM (Expr × Expr) := do
-    match e with
-    | sexp!{(let (...{_}) {_})} =>
+    if let sexp!{(let (...{_}) {_})} := e then
       -- SMT-LIB supports nesting of parallel let expressions. Both can be
       -- very long. So, we use tail-call recursion to avoid stack overflows.
       let state ← get
@@ -141,38 +140,38 @@ where
       set state
       let e := bindings.foldr (fun (_, n, t, v) b => mkLetFun n t v tb b) b
       return (tb, e)
-    | sexp!{true} =>
+    if let sexp!{true} := e then
       return (mkBool, .const ``true [])
-    | sexp!{false} =>
+    if let sexp!{false} := e then
       return (mkBool, .const ``false [])
-    | sexp!{(not {p})} =>
+    if let sexp!{(not {p})} := e then
       let (_, p) ← parseTerm p
       return (mkBool, .app (.const ``not []) p)
-    | sexp!{(=> ...{ps})} =>
+    if let sexp!{(=> ...{ps})} := e then
       let ps ← ps.mapM (fun p => return (← parseTerm p).snd)
       let p := ps.dropLast.foldr (mkApp2 (.const ``implies [])) ps.getLast!
       return (mkBool, p)
-    | sexp!{(and ...{ps})} =>
-      leftAssocOpBool (.const ``and []) ps
-    | sexp!{(or ...{ps})} =>
-      leftAssocOpBool (.const ``or []) ps
-    | sexp!{(xor ...{ps})} =>
-      leftAssocOpBool (.const ``xor []) ps
-    | sexp!{(= {x} {y})} =>
+    if let sexp!{(and ...{ps})} := e then
+      return ← leftAssocOpBool (.const ``and []) ps
+    if let sexp!{(or ...{ps})} := e then
+      return ← leftAssocOpBool (.const ``or []) ps
+    if let sexp!{(xor ...{ps})} := e then
+      return ← leftAssocOpBool (.const ``xor []) ps
+    if let sexp!{(= {x} {y})} := e then
       let (α, x) ← parseTerm x
       let (_, y) ← parseTerm y
       let hα := if α == mkBool then mkInstBEqBool else mkInstBEqBitVec (getBitVecWidth α)
       return (mkBool, mkApp4 (.const ``BEq.beq [0]) α hα x y)
-    | sexp!{(distinct ...{xs})} =>
-      pairwiseDistinct xs
-    | sexp!{(ite {c} {t} {e})} =>
+    if let sexp!{(distinct ...{xs})} := e then
+      return ← pairwiseDistinct xs
+    if let sexp!{(ite {c} {t} {e})} := e then
       let (_, c) ← parseTerm c
       let (α, t) ← parseTerm t
       let (_, e) ← parseTerm e
       let condition := mkApp3 (mkConst ``Eq [1]) (mkConst ``Bool) c (mkConst ``Bool.true)
       let inst := mkApp2 (mkConst ``instDecidableEqBool) c (mkConst ``Bool.true)
       return (α, mkApp5 (mkConst ``ite [1]) α condition inst t e)
-    | sexp!{(concat ...{xs})} =>
+    if let sexp!{(concat ...{xs})} := e then
       let (α, acc) ← parseTerm xs.head!
       let w := getBitVecWidth α
       let f := fun (w, acc) x => do
@@ -181,169 +180,166 @@ where
         return (w + v, mkApp2 (mkBitVecAppend w v) acc x)
       let (w, acc) ← xs.tail.foldlM f (w, acc)
       return (mkBitVec w, acc)
-    | sexp!{(bvand ...{xs})} =>
-      leftAssocOpBitVec mkBitVecAnd xs
-    | sexp!{(bvor ...{xs})} =>
-      leftAssocOpBitVec mkBitVecOr xs
-    | sexp!{(bvxor ...{xs})} =>
-      leftAssocOpBitVec mkBitVecXor xs
-    | sexp!{(bvnot {x})} =>
+    if let sexp!{(bvand ...{xs})} := e then
+      return ← leftAssocOpBitVec mkBitVecAnd xs
+    if let sexp!{(bvor ...{xs})} := e then
+      return ← leftAssocOpBitVec mkBitVecOr xs
+    if let sexp!{(bvxor ...{xs})} := e then
+      return ← leftAssocOpBitVec mkBitVecXor xs
+    if let sexp!{(bvnot {x})} := e then
       let (α, x) ← parseTerm x
       let w := getBitVecWidth α
       return (α, .app (mkBitVecNot w) x)
-    | sexp!{(bvnand {x} {y})} =>
+    if let sexp!{(bvnand {x} {y})} := e then
       let (α, x) ← parseTerm x
       let (_, y) ← parseTerm y
       let w := getBitVecWidth α
       return (α, mkApp3 (.const ``BitVec.nand []) (mkNatLit w) x y)
-    | sexp!{(bvnor {x} {y})} =>
+    if let sexp!{(bvnor {x} {y})} := e then
       let (α, x) ← parseTerm x
       let (_, y) ← parseTerm y
       let w := getBitVecWidth α
       return (α, mkApp3 (.const ``BitVec.nor []) (mkNatLit w) x y)
-    | sexp!{(bvxnor {x} {y})} =>
+    if let sexp!{(bvxnor {x} {y})} := e then
       let (α, x) ← parseTerm x
       let (_, y) ← parseTerm y
       let w := getBitVecWidth α
       return (α, mkApp3 (.const ``BitVec.xnor []) (mkNatLit w) x y)
-    | sexp!{(bvcomp {x} {y})} =>
+    if let sexp!{(bvcomp {x} {y})} := e then
       let (α, x) ← parseTerm x
       let (_, y) ← parseTerm y
       let w := getBitVecWidth α
       return (mkBitVec 1, mkApp3 (.const ``BitVec.compare []) (mkNatLit w) x y)
-    | sexp!{(bvmul ...{xs})} =>
-      leftAssocOpBitVec mkBitVecMul xs
-    | sexp!{(bvadd ...{xs})} =>
-      leftAssocOpBitVec mkBitVecAdd xs
-    | sexp!{(bvsub ...{xs})} =>
-      leftAssocOpBitVec mkBitVecSub xs
-    | sexp!{(bvneg {x})} =>
+    if let sexp!{(bvmul ...{xs})} := e then
+      return ← leftAssocOpBitVec mkBitVecMul xs
+    if let sexp!{(bvadd ...{xs})} := e then
+      return ← leftAssocOpBitVec mkBitVecAdd xs
+    if let sexp!{(bvsub ...{xs})} := e then
+      return ← leftAssocOpBitVec mkBitVecSub xs
+    if let sexp!{(bvneg {x})} := e then
       let (α, x) ← parseTerm x
       let w := getBitVecWidth α
       return (α, .app (mkBitVecNeg w) x)
-    | sexp!{(bvudiv {x} {y})} =>
+    if let sexp!{(bvudiv {x} {y})} := e then
       let (α, x) ← parseTerm x
       let (_, y) ← parseTerm y
       let w := getBitVecWidth α
       return (α, mkApp3 (.const ``BitVec.smtUDiv []) (mkNatLit w) x y)
-    | sexp!{(bvurem {x} {y})} =>
+    if let sexp!{(bvurem {x} {y})} := e then
       let (α, x) ← parseTerm x
       let (_, y) ← parseTerm y
       let w := getBitVecWidth α
       return (α, mkApp2 (mkBitVecMod w) x y)
-    | sexp!{(bvsdiv {x} {y})} =>
+    if let sexp!{(bvsdiv {x} {y})} := e then
       let (α, x) ← parseTerm x
       let (_, y) ← parseTerm y
       let w := getBitVecWidth α
       return (α, mkApp3 (.const ``BitVec.smtSDiv []) (mkNatLit w) x y)
-    | sexp!{(bvsrem {x} {y})} =>
+    if let sexp!{(bvsrem {x} {y})} := e then
       let (α, x) ← parseTerm x
       let (_, y) ← parseTerm y
       let w := getBitVecWidth α
       return (α, mkApp3 (.const ``BitVec.srem []) (mkNatLit w) x y)
-    | sexp!{(bvsmod {x} {y})} =>
+    if let sexp!{(bvsmod {x} {y})} := e then
       let (α, x) ← parseTerm x
       let (_, y) ← parseTerm y
       let w := getBitVecWidth α
       return (α, mkApp3 (.const ``BitVec.smod []) (mkNatLit w) x y)
-    | sexp!{(bvshl {x} {y})} =>
+    if let sexp!{(bvshl {x} {y})} := e then
       let (α, x) ← parseTerm x
       let (_, y) ← parseTerm y
       let w := getBitVecWidth α
       return (α, mkApp2 (mkBitVecShiftLeft w) x y)
-    | sexp!{(bvlshr {x} {y})} =>
+    if let sexp!{(bvlshr {x} {y})} := e then
       let (α, x) ← parseTerm x
       let (_, y) ← parseTerm y
       let w := getBitVecWidth α
       return (α, mkApp2 (mkBitVecShiftRight w) x y)
-    | sexp!{(bvashr {x} {y})} =>
+    if let sexp!{(bvashr {x} {y})} := e then
       let (α, x) ← parseTerm x
       let (_, y) ← parseTerm y
       let w := getBitVecWidth α
       return (α, mkApp4 (.const ``BitVec.sshiftRight' []) (mkNatLit w) (mkNatLit w) x y)
-    | sexp!{(bvult {x} {y})} =>
+    if let sexp!{(bvult {x} {y})} := e then
       let (α, x) ← parseTerm x
       let (_, y) ← parseTerm y
       let w := getBitVecWidth α
       return (mkBool, mkApp3 (.const ``BitVec.ult []) (mkNatLit w) x y)
-    | sexp!{(bvule {x} {y})} =>
+    if let sexp!{(bvule {x} {y})} := e then
       let (α, x) ← parseTerm x
       let (_, y) ← parseTerm y
       let w := getBitVecWidth α
       return (mkBool, mkApp3 (.const ``BitVec.ule []) (mkNatLit w) x y)
-    | sexp!{(bvugt {x} {y})} =>
+    if let sexp!{(bvugt {x} {y})} := e then
       let (α, x) ← parseTerm x
       let (_, y) ← parseTerm y
       let w := getBitVecWidth α
       return (mkBool, mkApp3 (.const ``BitVec.ugt []) (mkNatLit w) x y)
-    | sexp!{(bvuge {x} {y})} =>
+    if let sexp!{(bvuge {x} {y})} := e then
       let (α, x) ← parseTerm x
       let (_, y) ← parseTerm y
       let w := getBitVecWidth α
       return (mkBool, mkApp3 (.const ``BitVec.uge []) (mkNatLit w) x y)
-    | sexp!{(bvslt {x} {y})} =>
+    if let sexp!{(bvslt {x} {y})} := e then
       let (α, x) ← parseTerm x
       let (_, y) ← parseTerm y
       let w := getBitVecWidth α
       return (mkBool, mkApp3 (.const ``BitVec.slt []) (mkNatLit w) x y)
-    | sexp!{(bvsle {x} {y})} =>
+    if let sexp!{(bvsle {x} {y})} := e then
       let (α, x) ← parseTerm x
       let (_, y) ← parseTerm y
       let w := getBitVecWidth α
       return (mkBool, mkApp3 (.const ``BitVec.sle []) (mkNatLit w) x y)
-    | sexp!{(bvsgt {x} {y})} =>
+    if let sexp!{(bvsgt {x} {y})} := e then
       let (α, x) ← parseTerm x
       let (_, y) ← parseTerm y
       let w := getBitVecWidth α
       return (mkBool, mkApp3 (.const ``BitVec.sgt []) (mkNatLit w) x y)
-    | sexp!{(bvsge {x} {y})} =>
+    if let sexp!{(bvsge {x} {y})} := e then
       let (α, x) ← parseTerm x
       let (_, y) ← parseTerm y
       let w := getBitVecWidth α
       return (mkBool, mkApp3 (.const ``BitVec.sge []) (mkNatLit w) x y)
-    | sexp!{((_ extract {i} {j}) {x})} =>
+    if let sexp!{((_ extract {i} {j}) {x})} := e then
       let i := i.serialize.toNat!
       let j := j.serialize.toNat!
       let (α, x) ← parseTerm x
       let w := getBitVecWidth α
       return (mkBitVec (i - j + 1), mkApp4 (.const ``BitVec.extractLsb []) (mkNatLit w) (mkNatLit i) (mkNatLit j) x)
-    | sexp!{((_ repeat {i}) {x})} =>
+    if let sexp!{((_ repeat {i}) {x})} := e then
       let i := i.serialize.toNat!
       let (α, x) ← parseTerm x
       let w := getBitVecWidth α
       return (mkBitVec (w * i), mkApp3 (.const ``BitVec.replicate []) (mkNatLit w) (mkNatLit i) x)
-    | sexp!{((_ zero_extend {i}) {x})} =>
+    if let sexp!{((_ zero_extend {i}) {x})} := e then
       let i := i.serialize.toNat!
       let (α, x) ← parseTerm x
       let w := getBitVecWidth α
       return (mkBitVec (w + i), mkApp3 (.const ``BitVec.zeroExtend []) (mkNatLit w) (mkNatLit (w + i)) x)
-    | sexp!{((_ sign_extend {i}) {x})} =>
+    if let sexp!{((_ sign_extend {i}) {x})} := e then
       let i := i.serialize.toNat!
       let (α, x) ← parseTerm x
       let w := getBitVecWidth α
       return (mkBitVec (w + i), mkApp3 (.const ``BitVec.signExtend []) (mkNatLit w) (mkNatLit (w + i)) x)
-    | sexp!{((_ rotate_left {i}) {x})} =>
+    if let sexp!{((_ rotate_left {i}) {x})} := e then
       let i := i.serialize.toNat!
       let (α, x) ← parseTerm x
       let w := getBitVecWidth α
       return (α, mkApp3 (.const ``BitVec.rotateLeft []) (mkNatLit w) x (mkNatLit i))
-    | sexp!{((_ rotate_right {i}) {x})} =>
+    if let sexp!{((_ rotate_right {i}) {x})} := e then
       let i := i.serialize.toNat!
       let (α, x) ← parseTerm x
       let w := getBitVecWidth α
       return (α, mkApp3 (.const ``BitVec.rotateRight []) (mkNatLit w) x (mkNatLit i))
-    | _ =>
-      if let some r ← parseVar? e then
-        return r
-      else
-      if let some r := parseBVLiteral? s then
-        return r
-      else if let sexp!{({f} ...{as})} := s then
-        let (α, f) ← parseTerm f
-        let as ← as.mapM (fun a => return (← parseTerm a).snd)
-        return (retType α, mkAppN f as.toArray)
-      else
-        throw m!"Error: unsupported term {e}"
+    if let some r ← parseVar? e then
+      return r
+    if let some r := parseBVLiteral? s then
+      return r
+    if let sexp!{({f} ...{as})} := s then
+      let (α, f) ← parseTerm f
+      let as ← as.mapM (fun a => return (← parseTerm a).snd)
+      return (retType α, mkAppN f as.toArray)
+    throw m!"Error: unsupported term {e}"
   retType : Expr → Expr
     | .forallE _ _ b _ => retType b
     | e                => e
