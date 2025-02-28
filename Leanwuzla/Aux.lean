@@ -14,8 +14,8 @@ namespace BitVec
 @[bv_normalize] protected def xnor {n : Nat} (x y : BitVec n) : BitVec n :=
   ~~~(x ^^^ y)
 
-@[bv_normalize] protected def compare (x y : BitVec n) : BitVec 1 :=
-  if x == y then 1#1 else 0#1
+@[bv_normalize] protected def compare {n : Nat} (x y : BitVec n) : BitVec 1 :=
+  bif x == y then 1#1 else 0#1
 
 @[bv_normalize] protected def ugt {n : Nat} (x y : BitVec n) : Bool :=
   BitVec.ult y x
