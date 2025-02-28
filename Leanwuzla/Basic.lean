@@ -49,7 +49,8 @@ def getBVDecideConfig : SolverM Elab.Tactic.BVDecide.Frontend.BVDecideConfig := 
     andFlattening := !ctx.disableAndFlatten
     maxSteps := ctx.maxSteps
     structures := false,
-    fixedInt := false
+    fixedInt := false,
+    enums := false
   }
 
 def run (x : SolverM α) (ctx : Context) (coreContext : Core.Context) (coreState : Core.State) :
