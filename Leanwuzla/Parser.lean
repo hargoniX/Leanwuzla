@@ -168,7 +168,7 @@ where
       let (_, c) ← parseTerm c
       let (α, t) ← parseTerm t
       let (_, e) ← parseTerm e
-      return (α, mkApp4 (mkConst ``cond [0]) α c t e)
+      return (α, mkApp4 (mkConst ``cond [1]) α c t e)
     if let sexp!{(concat ...{xs})} := e then
       let (α, acc) ← parseTerm xs.head!
       let w := getBitVecWidth α
