@@ -12,7 +12,7 @@ def parseSmt2File (path : System.FilePath) : MetaM Expr := do
 
 
 open Elab in
-def decideSmt (type : Expr) : SolverM UInt32 := do
+def decideSmt (type : Expr) : SolverM UInt8 := do
   let mv ← Meta.mkFreshExprMVar type
   let (_, mv') ← mv.mvarId!.introsP
   trace[Meta.Tactic.bv] m!"Working on goal: {mv'}"
@@ -29,10 +29,10 @@ def decideSmt (type : Expr) : SolverM UInt32 := do
       -- We fully support SMT-LIB v2.6. Getting the above error message means
       -- the goal was reduced to `False` with only `True` as an assumption.
       logInfo "sat"
-      return (0 : UInt32)
+      return (0 : UInt8)
     else
       logError m!"Error: {e.toMessageData}"
-      return (1 : UInt32)
+      return (1 : UInt8)
   let value ← instantiateExprMVars mv
   try
     Lean.addDecl (.thmDecl { name := ← Lean.mkAuxName `thm 1, levelParams := [], type, value })
@@ -42,7 +42,7 @@ def decideSmt (type : Expr) : SolverM UInt32 := do
     logError m!"Error: {e.toMessageData}"
     return 1
 
-def typeCheck (e : Expr) : SolverM UInt32 := do
+def typeCheck (e : Expr) : SolverM UInt8 := do
   try
     let defn := .defnDecl {
       name := ← Lean.mkAuxName `def 1
@@ -58,7 +58,7 @@ def typeCheck (e : Expr) : SolverM UInt32 := do
     logError m!"Error: {e.toMessageData}"
     return 1
 
-def parseAndDecideSmt2File : SolverM UInt32 := do
+def parseAndDecideSmt2File : SolverM UInt8 := do
   try
     let goalType ← parseSmt2File (← SolverM.getInput)
     if ← SolverM.getParseOnly then
@@ -84,7 +84,8 @@ unsafe def runLeanwuzlaCmd (p : Parsed) : IO UInt32 := do
   withImportModules #[`Std.Tactic.BVDecide, `Leanwuzla.Aux] {} 0 fun env => do
     let coreContext := { fileName := "leanwuzla", fileMap := default, options }
     let coreState := { env }
-    SolverM.run parseAndDecideSmt2File context coreContext coreState
+    let code ← SolverM.run parseAndDecideSmt2File context coreContext coreState
+    IO.Process.exit code
 where
   argsToOpts (p : Parsed) : Options := Id.run do
     let mut opts := Options.empty

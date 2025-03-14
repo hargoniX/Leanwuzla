@@ -25,7 +25,7 @@ def runSolver (cnf : CNF Nat) (solver : System.FilePath) (lratPath : System.File
 
     return .ok lratProof
 
-def decideSmtNoKernel (type : Expr) : SolverM UInt32 := do
+def decideSmtNoKernel (type : Expr) : SolverM UInt8 := do
   let solver ← TacticContext.new.determineSolver
   let g := (← Meta.mkFreshExprMVar type).mvarId!
   let (_, g) ← g.introsP
@@ -65,16 +65,16 @@ def decideSmtNoKernel (type : Expr) : SolverM UInt32 := do
               IO.lazyPure (fun _ => LRAT.check cert cnf)
           if certFine then
             logInfo "unsat"
-            return (0 : UInt32)
+            return (0 : UInt8)
           else
             logInfo "Error: Failed to check LRAT cert"
-            return (1 : UInt32)
+            return (1 : UInt8)
         | .error .. =>
           logInfo "sat"
-          return (0 : UInt32)
+          return (0 : UInt8)
       | none =>
         logInfo "unsat"
-        return (0 : UInt32)
+        return (0 : UInt8)
   catch e =>
     -- TODO: improve handling of sat cases. This is a temporary workaround.
     let message ← e.toMessageData.toString
@@ -82,7 +82,7 @@ def decideSmtNoKernel (type : Expr) : SolverM UInt32 := do
       -- We fully support SMT-LIB v2.6. Getting the above error message means
       -- the goal was reduced to `False` with only `True` as an assumption.
       logInfo "sat"
-      return (0 : UInt32)
+      return (0 : UInt8)
     else
       logError m!"Error: {e.toMessageData}"
-      return (1 : UInt32)
+      return (1 : UInt8)

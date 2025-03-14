@@ -1,4 +1,7 @@
-/- A list of Auxiliary definitions of SMT-LIB functions. -/
+prelude
+import Init.Data.BitVec.Basic
+
+/-! A list of Auxiliary definitions of SMT-LIB functions. -/
 
 @[bv_normalize] def implies (a b : Bool) : Bool :=
   !a || b
