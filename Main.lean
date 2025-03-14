@@ -122,7 +122,7 @@ where
 
   argsToContext (p : Parsed) : Context :=
     {
-      acNf := p.hasFlag "acNf"
+      acNf := p.hasFlag "acnf"
       parseOnly := p.hasFlag "parseOnly"
       timeout := p.flag! "timeout" |>.as! Nat
       input := p.positionalArg! "input" |>.as! String
