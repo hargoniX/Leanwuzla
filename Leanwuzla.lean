@@ -147,18 +147,11 @@ where
     | .un op operand =>
       match op with
       | .not => pushUnaryOp "bvnot" (goBVExpr operand)
-      | .shiftLeftConst n => pushBinaryOp "bvshl" (goBVExpr operand) (goBVExpr (bvConst w n))
-      | .shiftRightConst n => pushBinaryOp "bvlshr" (goBVExpr operand) (goBVExpr (bvConst w n))
       | .rotateLeft n => pushUnaryOp s!"(_ rotate_left {n})" (goBVExpr operand)
       | .rotateRight n => pushUnaryOp s!"(_ rotate_right {n})" (goBVExpr operand)
       | .arithShiftRightConst n => pushBinaryOp s!"bvashr" (goBVExpr operand) (goBVExpr (bvConst w n))
     | .append lhs rhs => pushBinaryOp "concat" (goBVExpr lhs) (goBVExpr rhs)
     | .replicate n expr => pushUnaryOp s!"(_ repeat {n})" (goBVExpr expr)
-    | .zeroExtend (w := w) v expr =>
-      if v ≤ w then
-        emitTruncate expr v
-      else
-        pushUnaryOp s!"(_ zero_extend {v - w})" (goBVExpr expr)
     | .signExtend (w := w) v expr =>
       if v ≤ w then
         emitTruncate expr v
