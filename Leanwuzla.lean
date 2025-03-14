@@ -152,11 +152,6 @@ where
       | .arithShiftRightConst n => pushBinaryOp s!"bvashr" (goBVExpr operand) (goBVExpr (bvConst w n))
     | .append lhs rhs => pushBinaryOp "concat" (goBVExpr lhs) (goBVExpr rhs)
     | .replicate n expr => pushUnaryOp s!"(_ repeat {n})" (goBVExpr expr)
-    | .signExtend (w := w) v expr =>
-      if v ≤ w then
-        emitTruncate expr v
-      else
-        pushUnaryOp s!"(_ sign_extend {v - w})" (goBVExpr expr)
     | .shiftLeft lhs rhs => pushBinaryOp "bvshl" (goBVExpr lhs) (goBVExpr rhs)
     | .shiftRight lhs rhs => pushBinaryOp "bvlshr" (goBVExpr lhs) (goBVExpr rhs)
     | .arithShiftRight lhs rhs => pushBinaryOp "bvashr" (goBVExpr lhs) (goBVExpr rhs)
