@@ -303,7 +303,9 @@ where
       let j := j.serialize.toNat!
       let (α, x) ← parseTerm x
       let w := getBitVecWidth α
-      return (mkBitVec (i - j + 1), mkApp4 (.const ``BitVec.extractLsb []) (mkNatLit w) (mkNatLit i) (mkNatLit j) x)
+      let start := j
+      let len := i - j + 1
+      return (mkBitVec (i - j + 1), mkApp4 (.const ``BitVec.extractLsb' []) (mkNatLit w) (mkNatLit start) (mkNatLit len) x)
     if let sexp!{((_ repeat {i}) {x})} := e then
       let i := i.serialize.toNat!
       let (α, x) ← parseTerm x
