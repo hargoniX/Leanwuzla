@@ -329,7 +329,7 @@ where
       | .trace data msg children =>
         let msg ← msg.toString
         match msg with
-        | "Normalizing goal" =>
+        | "Preprocessing goal" =>
           modify fun s => { s with timeRewrite := TraceData.durationMs data }
         | "Bitblasting BVLogicalExpr to AIG" =>
           modify fun s => { s with timeBitBlasting := TraceData.durationMs data }
@@ -356,7 +356,7 @@ where
       | .trace data msg children =>
         let msg ← msg.toString
         match msg with
-        | "Normalizing goal" =>
+        | "Preprocessing goal" =>
           modify fun s => { s with timeRewrite := TraceData.durationMs data }
         | "Running SAT solver" =>
           modify fun s => { s with timeSatSolving := TraceData.durationMs data }
