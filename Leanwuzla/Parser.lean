@@ -315,7 +315,7 @@ where
       let i := i.serialize.toNat!
       let (α, x) ← parseTerm x
       let w := getBitVecWidth α
-      return (mkBitVec (w + i), mkApp3 (.const ``BitVec.zeroExtend []) (mkNatLit w) (mkNatLit (w + i)) x)
+      return (mkBitVec (w + i), mkApp3 (.const ``BitVec.setWidth []) (mkNatLit w) (mkNatLit (w + i)) x)
     if let sexp!{((_ sign_extend {i}) {x})} := e then
       let i := i.serialize.toNat!
       let (α, x) ← parseTerm x
