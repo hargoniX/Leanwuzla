@@ -81,11 +81,12 @@ unsafe def runLeanwuzlaCmd (p : Parsed) : IO UInt32 := do
   let options := argsToOpts p
   let context := argsToContext p
   Lean.initSearchPath (← Lean.findSysroot)
-  withImportModules #[`Std.Tactic.BVDecide, `Leanwuzla.Aux] {} 0 fun env => do
-    let coreContext := { fileName := "leanwuzla", fileMap := default, options }
-    let coreState := { env }
-    let code ← SolverM.run parseAndDecideSmt2File context coreContext coreState
-    IO.Process.exit code
+  enableInitializersExecution
+  let env ← importModules #[`Std.Tactic.BVDecide, `Leanwuzla.Aux] {} 0
+  let coreContext := { fileName := "leanwuzla", fileMap := default, options }
+  let coreState := { env }
+  let code ← SolverM.run parseAndDecideSmt2File context coreContext coreState
+  IO.Process.exit code
 where
   argsToOpts (p : Parsed) : Options := Id.run do
     let mut opts := Options.empty
@@ -110,8 +111,8 @@ where
     if p.hasFlag "parseOnly" then
        opts :=
         opts
-          |>.setNat `pp.maxSteps 10000000000
-          |>.setNat `pp.deepTerms.threshold 100
+          |>.setNat `pp.maxSteps 10000000000000
+          |>.setNat `pp.deepTerms.threshold 1000000
 
     opts := opts.setNat `maxHeartbeats <| p.flag! "maxHeartbeats" |>.as! Nat
     opts := opts.setNat `maxRecDepth <| p.flag! "maxRecDepth" |>.as! Nat
