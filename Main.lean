@@ -82,7 +82,7 @@ unsafe def runLeanwuzlaCmd (p : Parsed) : IO UInt32 := do
   let context := argsToContext p
   Lean.initSearchPath (← Lean.findSysroot)
   enableInitializersExecution
-  let env ← importModules #[`Std.Tactic.BVDecide, `Leanwuzla.Aux] {} 0
+  let env ← importModules #[`Std.Tactic.BVDecide, `Leanwuzla.Aux] {} 0 (loadExts := true)
   let coreContext := { fileName := "leanwuzla", fileMap := default, options }
   let coreState := { env }
   let code ← SolverM.run parseAndDecideSmt2File context coreContext coreState
