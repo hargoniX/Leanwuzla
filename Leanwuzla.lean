@@ -150,6 +150,7 @@ where
       | .rotateLeft n => pushUnaryOp s!"(_ rotate_left {n})" (goBVExpr operand)
       | .rotateRight n => pushUnaryOp s!"(_ rotate_right {n})" (goBVExpr operand)
       | .arithShiftRightConst n => pushBinaryOp s!"bvashr" (goBVExpr operand) (goBVExpr (bvConst w n))
+      | .reverse => panic! "Reverse currently not supported in SMTLIB production"
     | .append lhs rhs _ => pushBinaryOp "concat" (goBVExpr lhs) (goBVExpr rhs)
     | .replicate n expr _ => pushUnaryOp s!"(_ repeat {n})" (goBVExpr expr)
     | .shiftLeft lhs rhs => pushBinaryOp "bvshl" (goBVExpr lhs) (goBVExpr rhs)

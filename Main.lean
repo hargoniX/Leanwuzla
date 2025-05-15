@@ -111,8 +111,8 @@ where
     if p.hasFlag "parseOnly" then
        opts :=
         opts
-          |>.setNat `pp.maxSteps 10000000000000
-          |>.setNat `pp.deepTerms.threshold 1000000
+          |>.setNat `pp.maxSteps 100000000000000000
+          |>.setNat `pp.deepTerms.threshold 100000000
 
     opts := opts.setNat `maxHeartbeats <| p.flag! "maxHeartbeats" |>.as! Nat
     opts := opts.setNat `maxRecDepth <| p.flag! "maxRecDepth" |>.as! Nat
