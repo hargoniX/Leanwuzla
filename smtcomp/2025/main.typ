@@ -59,10 +59,21 @@
 `bv_decide` is a Satisfiability Module Theories (SMT) solver for the quantifier-free theory of
 bit-vectors. It implements an eager SMT approach, consisting of a rewriting and a bit-blasting phase.
 Algorithmically the system follows the approach of the Bitwuzla SMT solver @bitwuzla with the
-crucial twist that the rewriting and bit-blasting engine is implemented and verified as part of the
-Lean 4 theorem prover and programming language @lean4. Furthermore, in order to ensure end-to-end
-correctness of the result, `bv_decide` also checks the LRAT @lrat certificate produced by the SAT
-backend, using a formally verified LRAT checker written in Lean.
+crucial twist that the solver is implemented and verified as part of the Lean 4 theorem prover
+and programming language @lean4. Furthermore, in order to ensure end-to-end correctness of the result,
+`bv_decide` also checks the LRAT @lrat certificate produced by the SAT backend. Overall `bv_decide`
+contains three key verified components.
+
+First the rewriting engine which is heavily inspired by Bitwuzla's rewrite rules with the key
+difference that all of the ported rewrite rules are verified for arbitrary bit-widths within Lean.
+
+Secondly the bit-blasting engine which is based on a formally verified AIG framework that uses
+Lean's built-in support for imperative data structures such as arrays and hash maps to achieve
+imperative performance characteristics.
+
+Lastly the verified LRAT checker which is used to import proofs of UNSAT from the SAT solving
+backend into the Lean logic. As an additional optimization step the LRAT checker trims the LRAT file
+to drop unused proof steps with the same strategy as `lrat-trim` @lrat-trim.
 
 Because `bv_decide` was originally developed as an integrated tactic for Lean itself it does not natively
 speak the SMT-LIB format. For this we developed a wrapper called `leanwuzla` @leanwuzla that is able
