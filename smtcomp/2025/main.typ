@@ -56,56 +56,64 @@
 )
 
 = Introduction
-`bv_decide` is a Satisfiability Modulo Theories (SMT) solver for the quantifier-free theory of
-bit-vectors. It implements an eager SMT approach, consisting of a rewriting and a bit-blasting phase.
-Algorithmically, the system follows the approach of the Bitwuzla SMT solver @bitwuzla with the
+
+`bv_decide` is a Lean 4 @lean4 tactic for deciding quantifier-free bit-vector `QF_BV` formulas.
+It eagerly determines satisfiability by rewriting and simplifying bit-vector formulas,
+bit-blasting them into propositional logic, and invoking a SAT solver with certificate checking.
+
+Algorithmically, `bv_decide` follows the approach of the Bitwuzla SMT solver @bitwuzla, with the
 crucial twist that the solver is implemented and verified as part of the Lean 4 theorem prover
-and programming language @lean4. Furthermore, in order to ensure end-to-end correctness of the result,
-`bv_decide` also checks the LRAT @lrat certificate produced by the SAT backend. Overall `bv_decide`
-contains three key verified components:
+and programming language. Furthermore, to ensure the end-to-end correctness of results,
+`bv_decide` also checks the LRAT @lrat certificate produced by the SAT backend.
 
-(1) The rewriting engine, which is heavily inspired by Bitwuzla's rewrite rules.
-We also formally verify all rewrites used by `bv_decide` for arbitrary bit-widths within Lean.
+= Core (Verified) Components
 
-(2) The bit-blasting engine, which is based on a formally verified AIG framework that uses
-Lean's built-in support for imperative data structures, such as arrays and hash maps to achieve
-imperative performance characteristics.
+1. *Bitvector Rewrites:* Inspired by Bitwuzla's equational rewrite rules to simplify `QF_BV` formulas.
+  All rewrite rules are formally verified in Lean for arbitrary bit-widths, ensuring semantic equivalence.
 
-(3) The verified LRAT checker, which is used to import proofs of UNSAT from the SAT solving
-backend (the `cadical` solver) into the Lean logic. As an additional optimization step, the LRAT checker trims the LRAT file
-to drop unused proof steps with the same strategy as `lrat-trim` @lrat-trim.
+2. *Bit-Blasting Engine:* Transforms simplified bit-vector expressions into an And-Inverter Graph (AIG)
+  and then into CNF. Built atop a verified AIG framework that uses Lean's imperative arrays and
+  hash maps for efficient in-place operations.
 
-The `bv_decide` tactic is originally developed as an integrated tactic for Lean,
-and thus does not natively speak the SMT-LIB format.
-To remedy this, we developed a wrapper called `leanwuzla` @leanwuzla that is able
-to translate problems from the `QF_BV` SMT-LIB logic into a Lean problem that `bv_decide`
-can decide. Note that this wrapper is not formally verified.
+3. *LRAT Checker:* After encoding the AIG to CNF, `bv_decide` invokes the SAT backend on the CNF problem,
+  which emits an LRAT certificate if the problem is UNSAT. The verified LRAT checker then validates
+  the UNSAT proof and trims unused proof steps, following the `lrat-trim` strategy @lrat-trim.
 
-Thus, despite being an end-to-end, formally verified solver,
-there are three sources of error that could, in
-theory, still causes `bv_decide` to output a wrong result from an input SMT-LIB expression:
+= Certifying Components
 
-Firstly, `leanwuzla` could mis-parse an SMT-LIB file.
-This would cause `bv_decide` to solve a problem different from the one intended by the SMT-LIB input.
-We thus tested the `leanwuzla` component on all of SMT-LIB 2024 in order
-to gain confidence that the parser is indeed correct.
+The following components are not verified but output certificates that are checked by other
+components of `bv_decide`:
 
-Secondly, the Lean compiler could have compiled the `bv_decide` source code to a binary that does not
-semantically correspond to the source. Once again, since `leanwuzla` has been tested on SMT-LIB 2024,
-we have reasonable confidence that there are no Lean compiler bugs that affect `bv_decide`.
+1. *SAT Backend:* The SAT backend does not need to be verified and is treated as a black box. However,
+  we require it to produce a valid LRAT certificate, which is then checked by the verified LRAT checker.
 
-Lastly, the Lean kernel has a soundness bug.
-This would allow us to falsely establish the correctness of the bitblasting of `bv_decide`.
-This is highly unlikely, as the Lean kernel is implemented with the De Bruijn criterion in mind @barendregt2005challenge,
-ensuring that the Lean kernel has a small trusted code base, which has undergone careful review and heavy testing.
-It is particularly unlike to have bugs that allow it to accept incorrect, but nevertheless non-adversarial proofs.
-Most soundness issues in the past have been exploited by proofs that are specifically crafted to exploit a particular vulnerability in the
-implementation.
-Since we perform fairly standard reasoning, we do not believe this to be a serious issue/
+2. *Rewrite Engine:* The proof generated by this engine during the transformation of the original
+  bit-vector formula is checked by the Lean kernel.
 
-= Configurations
-`bv_decide` participates in the single query track of the `QF_BV` logic. It uses CaDiCaL version
-2.1.2 @cadical as the SAT backend.
+= Sources of Error
+
+Despite end-to-end verification, three low-probability sources of error remain:
+
+1. *Parsing Errors*, which may cause `bv_decide` to misinterpret SMT-LIB input. `bv_decide` is
+  developed as an integrated tactic for Lean and thus does not natively support the SMT-LIB format.
+  To use it in SMT-COMP, we developed a wrapper called `leanwuzla` @leanwuzla that translates
+  SMT-LIB queries into Lean propositions for `bv_decide` to decide. This wrapper is not formally verified.
+  However, extensive testing on SMT-LIB 2024 provides high confidence in its correctness.
+
+2. *Compiler Bugs* in Lean 4, which might produce a binary misaligned with source semantics.
+  Again, successful runs on SMT-LIB 2024 benchmarks offer indirect validation.
+
+3. *Kernel Unsoundness*, which could undermine proof checking. The Lean kernel follows the De Bruijn criterion
+  @barendregt2005challenge and has a small, audited codebase, making serious soundness failures extremely unlikely.
+  Most soundness issues in the past have been due to proofs specifically crafted to exploit particular
+  implementation vulnerabilities. Since we perform fairly standard reasoning, we do not believe this
+  to be a serious concern.
+
+= Competition Entry
+
+`bv_decide` competes in the single-query track of the `QF_BV` logic at SMT-COMP 2025,
+using CaDiCaL 2.1.2 @cadical as its SAT solver.
 
 = License
-`bv_decide` as well as `leanwuzla` are licensed under the Apache 2.0 license.
+
+Both `bv_decide` and its SMT-LIB wrapper `leanwuzla` are released under the Apache 2.0 license.
