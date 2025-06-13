@@ -81,7 +81,7 @@ and programming language. Furthermore, to ensure the end-to-end correctness of r
 
 = Certifying Components
 
-The following components are not verified but output certificates that are checked by other
+The following components are not verified, and instead output certificates that are checked by other
 components of `bv_decide`:
 
 1. *SAT Backend:* The SAT backend does not need to be verified and is treated as a black box. However,
