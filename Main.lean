@@ -35,7 +35,7 @@ def decideSmt (type : Expr) : SolverM UInt8 := do
       return (1 : UInt8)
   let value ← instantiateExprMVars mv
   try
-    Lean.addDecl (.thmDecl { name := ← Lean.mkAuxName `thm 1, levelParams := [], type, value })
+    Lean.addDecl (.thmDecl { name := ← Lean.mkAuxDeclName, levelParams := [], type, value })
     logInfo "unsat"
     return 0
   catch e =>
@@ -45,7 +45,7 @@ def decideSmt (type : Expr) : SolverM UInt8 := do
 def typeCheck (e : Expr) : SolverM UInt8 := do
   try
     let defn := .defnDecl {
-      name := ← Lean.mkAuxName `def 1
+      name := ← Lean.mkAuxDeclName
       levelParams := []
       type := .sort .zero
       value := e
