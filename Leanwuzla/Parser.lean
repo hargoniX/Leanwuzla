@@ -18,9 +18,6 @@ abbrev ParserM := StateT Parser.State (Except MessageData)
 
 namespace Parser
 
-private def mkLetFun (n : Name) (t v tb b : Expr) : Expr :=
-  mkApp4 (.const ``letFun [1, 1]) t (.lam .anonymous t tb .default) v (.lam n t b .default)
-
 private def mkBool : Expr :=
   .const ``Bool []
 
@@ -138,7 +135,7 @@ where
       let bindings ← parseNestedBindings bindings
       let (tb, b) ← parseTerm b
       set state
-      let e := bindings.foldr (fun (_, n, t, v) b => mkLetFun n t v tb b) b
+      let e := bindings.foldr (fun (_, n, t, v) b => .letE n t v b true) b
       return (tb, e)
     if let sexp!{true} := e then
       return (mkBool, .const ``true [])
@@ -457,7 +454,7 @@ def withDefs (defs : List Sexp) (k : ParserM Expr) : ParserM Expr := do
   let defs ← defs.mapM parseDef
   let b ← k
   set state
-  return defs.foldr (fun (_, n, t, v) b => mkLetFun n t v (.sort 0) b) b
+  return defs.foldr (fun (_, n, t, v) b => .letE n t v b true) b
 where
   parseDef (defn : Sexp) : ParserM (Sexp × Name × Expr × Expr) := do
     match defn with
