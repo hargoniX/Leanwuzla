@@ -26,7 +26,7 @@ def runSolver (cnf : CNF Nat) (solver : System.FilePath) (lratPath : System.File
     return .ok lratProof
 
 def decideSmtNoKernel (type : Expr) : SolverM UInt8 := do
-  let solver ← TacticContext.new.determineSolver
+  let solver ← determineSolver
   let g := (← Meta.mkFreshExprMVar type).mvarId!
   let (_, g) ← g.introsP
   trace[Meta.Tactic.bv] m!"Working on goal: {g}"
@@ -86,3 +86,15 @@ def decideSmtNoKernel (type : Expr) : SolverM UInt8 := do
     else
       logError m!"Error: {e.toMessageData}"
       return (1 : UInt8)
+where
+  determineSolver : CoreM System.FilePath := do
+    let opts ← getOptions
+    let option := sat.solver.get opts
+    if option == "" then
+      let cadicalPath := (← IO.appPath).parent.get! / "cadical" |>.withExtension System.FilePath.exeExtension
+      if ← cadicalPath.pathExists then
+        return cadicalPath
+      else
+        return "cadical"
+    else
+      return option

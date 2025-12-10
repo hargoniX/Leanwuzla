@@ -58,6 +58,37 @@ def typeCheck (e : Expr) : SolverM UInt8 := do
     logError m!"Error: {e.toMessageData}"
     return 1
 
+/--
+Reports messages on stdout and returns the new total number of errors reported.
+If `json` is true, prints messages as JSON (one per line).
+If a message's kind is in `severityOverrides`, it will be reported with
+the specified severity.
+-/
+private def reportMessages (msgLog : MessageLog) (opts : Options)
+    (json : Bool) (severityOverrides : NameMap MessageSeverity) (numErrors : Nat) : IO Nat := do
+  let includeEndPos := Lean.Language.printMessageEndPos.get opts
+  msgLog.unreported.foldlM (init := numErrors) fun numErrors msg => do
+    let numErrors := numErrors + (if msg.severity matches .error then 1 else 0)
+    let maxErrorsReached := Lean.Language.maxErrors.get opts != 0 && numErrors > Lean.Language.maxErrors.get opts
+    let msg : Message :=
+      if maxErrorsReached then { msg with
+        data := s!"maximum number of errors ({Lean.Language.maxErrors.get opts}; from option `maxErrors`) reached, exiting"
+        severity := .error
+      } else if let some severity := severityOverrides.find? msg.kind then
+        {msg with severity}
+      else
+        msg
+    unless msg.isSilent do
+      if json then
+        let j ← msg.toJson
+        IO.println j.compress
+      else
+        let s ← msg.toString includeEndPos
+        IO.print s
+    if maxErrorsReached then
+      IO.Process.exit 1
+    return numErrors
+
 def parseAndDecideSmt2File : SolverM UInt8 := do
   try
     let goalType ← parseSmt2File (← SolverM.getInput)
@@ -71,7 +102,7 @@ def parseAndDecideSmt2File : SolverM UInt8 := do
         decideSmt goalType
   finally
     printTraces
-    Lean.Language.reportMessages (← Core.getMessageLog) (← getOptions)
+    reportMessages (← Core.getMessageLog) (← getOptions) false {} 0
 
 section Cli
 
