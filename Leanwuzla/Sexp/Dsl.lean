@@ -19,8 +19,8 @@ def generalIdent : Parser :=
   withAntiquot (mkAntiquot "generalIdent" `generalIdent) {
     fn := fun c s =>
       let startPos := s.pos
-      let s := takeWhile1Fn (fun c => !("(){}[].".contains c) ∧ !c.isWhitespace) "expected generalized identifier" c s
-      mkNodeToken `generalIdent startPos c s }
+      let s := takeWhile1Fn (fun c => !("(){}⦃⦄".contains c) ∧ !c.isWhitespace) "expected generalized identifier" c s
+      mkNodeToken `generalIdent startPos true c s }
 
 def Lean.TSyntax.getGeneralId : TSyntax `generalIdent → String
   | ⟨.node _ `generalIdent args⟩ => args[0]!.getAtomVal
@@ -43,18 +43,18 @@ syntax "(" slist ")" : sexp
 syntax "{" term "}" : sexp
 
 syntax sexp : slist
-syntax "...{" term "}" : slist
+syntax "⦃" term "⦄" : slist
 syntax sexp slist : slist
-syntax "...{" term "}" slist : slist
+syntax "⦃" term "⦄" slist : slist
 
 syntax "sexp!{" sexp "}" : term
 syntax "slist!{" slist "}" : term
 
 macro_rules
   | `(slist| $s:sexp) => `([sexp!{$s}])
-  | `(slist| ...{ $t:term }) => `(($t : List Sexp))
+  | `(slist| ⦃ $t:term ⦄) => `(($t : List Sexp))
   | `(slist| $s:sexp $ss:slist) => `(sexp!{$s} :: slist!{$ss})
-  | `(slist| ...{ $t:term } $ss:slist) => `(($t : List Sexp) ++ slist!{$ss})
+  | `(slist| ⦃ $t:term ⦄ $ss:slist) => `(($t : List Sexp) ++ slist!{$ss})
 
 macro_rules
   | `(sexp| $a:generalIdent) => `(Sexp.atom $(Lean.quote a.getGeneralId))
@@ -91,13 +91,15 @@ instance : Repr Sexp where
 /-- info: sexp!{(foo bar)} -/
 #guard_msgs in #eval sexp!{({Sexp.atom "foo"} bar)}
 /-- info: sexp!{(foo bar)} -/
-#guard_msgs in #eval sexp!{(foo ...{[Sexp.atom "bar"]})}
+#guard_msgs in #eval sexp!{(foo ⦃[Sexp.atom "bar"]⦄)}
 /-- info: sexp!{(foo bar)} -/
-#guard_msgs in #eval sexp!{(...{[Sexp.atom "foo"]} bar)}
+#guard_msgs in #eval sexp!{(foo ⦃[Sexp.atom "bar"]⦄)}
 /-- info: sexp!{(foo bar)} -/
-#guard_msgs in #eval sexp!{(...{[Sexp.atom "foo"]} ...{[Sexp.atom "bar"]})}
+#guard_msgs in #eval sexp!{(⦃[Sexp.atom "foo"]⦄ bar)}
 /-- info: sexp!{(foo bar)} -/
-#guard_msgs in #eval sexp!{(...{[Sexp.atom "foo", Sexp.atom "bar"]})}
+#guard_msgs in #eval sexp!{(⦃[Sexp.atom "foo"]⦄ ⦃[Sexp.atom "bar"]⦄)}
+/-- info: sexp!{(foo bar)} -/
+#guard_msgs in #eval sexp!{(⦃[Sexp.atom "foo", Sexp.atom "bar"]⦄)}
 /-- info: sexp!{(foo bar)} -/
 #guard_msgs in #eval sexp!{{Sexp.expr [Sexp.atom "foo", Sexp.atom "bar"]}}
 /-- info: [] -/

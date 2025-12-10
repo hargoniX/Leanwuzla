@@ -111,8 +111,8 @@ where
     match expr with
     | .var idx => push s!"x_{idx}"
     | .const val =>
-      let s := (Nat.toDigits 2 val.toNat).asString
-      let t := (List.replicate (w - s.length) '0').asString
+      let s := String.ofList (Nat.toDigits 2 val.toNat)
+      let t := String.ofList (List.replicate (w - s.length) '0')
       let binStr := t ++ s
       push "#b"
       push binStr
@@ -384,7 +384,7 @@ where
         let msg ← msg.toString
         let pref := "solving_context::time_solve: "
         if msg.startsWith pref then
-          let msg := (msg.splitOn " ")[1]!.dropRight 2
+          let msg := (msg.splitOn " ")[1]!.dropEnd 2
           set <| Float.ofInt msg.toNat!
         parseBitwuzlaTrace children
       | .withContext _ msg => parseBitwuzlaTrace #[msg]

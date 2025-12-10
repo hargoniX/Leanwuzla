@@ -1,5 +1,6 @@
 prelude
 import Init.Data.BitVec.Basic
+import Fp
 
 /-! A list of Auxiliary definitions of SMT-LIB functions. -/
 
