@@ -1,5 +1,6 @@
 import Leanwuzla.Aux
 import Leanwuzla.Sexp
+import Fp
 
 open Lean
 
@@ -23,15 +24,43 @@ abbrev ParserM := StateT Parser.State (Except MessageData)
 namespace Parser
 
 private def mkBool : Expr :=
-  .const ``Bool []
+  toTypeExpr Bool
 
 private def mkBitVec (w : Nat) : Expr :=
-  .app (.const ``BitVec []) (mkNatLit w)
+  toTypeExpr (BitVec w)
+
+-- Temporary ToExpr instances for PackedFloat and RoundingMode
+deriving instance ToExpr for PackedFloat
+deriving instance ToExpr for RoundingMode
+
+private def mkFloat (eb sb : Nat) : Expr :=
+  toTypeExpr (PackedFloat eb sb)
+
+private def mkRoundingMode : Expr :=
+  toTypeExpr RoundingMode
+
+private def mkFloat16 : Expr :=
+  toTypeExpr (PackedFloat 5 (11 - 1))
+
+private def mkFloat32 : Expr :=
+  toTypeExpr (PackedFloat 8 (24 - 1))
+
+private def mkFloat64 : Expr :=
+  toTypeExpr (PackedFloat 11 (53 - 1))
+
+private def mkFloat128 : Expr :=
+  toTypeExpr (PackedFloat 15 (113 - 1))
 
 private def getBitVecWidth (α : Expr) : ParserM Nat := do
   match α with
   | .app (.const ``BitVec []) w => return w.nat?.get!
   | _ => throw m!"Error: expected BitVec type, got {α}"
+
+private def getFloatEbSb (α : Expr) : ParserM (Nat × Nat) := do
+  match α with
+  | .app (.app (.const ``PackedFloat []) eb) sb =>
+    return (eb.nat?.get!, sb.nat?.get!)
+  | _ => throw m!"Error: expected PackedFloat type, got {α}"
 
 private def mkInstBEqBool : Expr :=
   mkApp2 (.const ``instBEqOfDecidableEq [0]) mkBool
@@ -40,6 +69,10 @@ private def mkInstBEqBool : Expr :=
 private def mkInstBEqBitVec (w : Nat) : Expr :=
   mkApp2 (.const ``instBEqOfDecidableEq [0]) (mkBitVec w)
          (.app (.const ``instDecidableEqBitVec []) (mkNatLit w))
+
+private def mkInstBEqFloat (eb sb : Nat) : Expr :=
+  mkApp2 (.const ``instBEqOfDecidableEq [0]) (mkFloat eb sb)
+         (mkApp2 (.const ``instDecidableEqPackedFloat []) (mkNatLit eb) (mkNatLit sb))
 
 private def mkBitVecAppend (w v : Nat) : Expr :=
   mkApp4 (.const ``HAppend.hAppend [0, 0, 0])
@@ -125,6 +158,20 @@ def parseSort (s  : Sexp) : ParserM (Expr × Expr) := do
   | sexp!{(_ BitVec {w})} =>
     let w := w.serialize.toNat!
     return (mkBitVec w, mkBitVec w)
+  | sexp!{(_ FloatingPoint {eb} {sb})} =>
+    let eb := eb.serialize.toNat!
+    let sb := sb.serialize.toNat!
+    return (mkFloat eb (sb - 1), mkFloat eb (sb - 1))
+  | sexp!{Float16} =>
+    return (mkFloat16, mkFloat16)
+  | sexp!{Float32} =>
+    return (mkFloat32, mkFloat32)
+  | sexp!{Float64} =>
+    return (mkFloat64, mkFloat64)
+  | sexp!{Float128} =>
+    return (mkFloat128, mkFloat128)
+  | sexp!{RoundingMode} =>
+    return (mkRoundingMode, mkRoundingMode)
   | sexp!{({sc} ⦃as⦄)} =>
     let (bsc, sc) ← parseSort sc
     let as ← as.mapM parseSort
@@ -159,9 +206,9 @@ where
       let e := bindings.foldr (fun (n, t, v) b => .letE n t v b true) b
       return (tb, e)
     if let sexp!{true} := e then
-      return (mkBool, .const ``true [])
+      return (mkBool, toExpr true)
     if let sexp!{false} := e then
-      return (mkBool, .const ``false [])
+      return (mkBool, toExpr false)
     if let sexp!{(not {p})} := e then
       let (_, p) ← parseTerm p
       return (mkBool, .app (.const ``not []) p)
@@ -180,6 +227,7 @@ where
       let (_, y) ← parseTerm y
       let hα ← if uα == mkBool then pure mkInstBEqBool
         else if uα.isAppOfArity ``BitVec 1 then pure (mkInstBEqBitVec (← getBitVecWidth uα))
+        else if uα.isAppOfArity ``PackedFloat 2 then let (eb, sb) ← getFloatEbSb uα; pure (mkInstBEqFloat eb sb)
         else throw m!"Error: unsupported type for equality: {uα}"
       return (mkBool, mkApp4 (.const ``BEq.beq [0]) uα hα x y)
     if let sexp!{(distinct ⦃xs⦄)} := e then
@@ -351,6 +399,173 @@ where
       let (α, x) ← parseTerm x
       let w ← getBitVecWidth α
       return (α, mkApp3 (.const ``BitVec.rotateRight []) (mkNatLit w) x (mkNatLit i))
+    if let sexp!{roundNearestTiesToEven} := e then
+      return (mkRoundingMode, toExpr RoundingMode.RNE)
+    if let sexp!{RNE} := e then
+      return (mkRoundingMode, toExpr RoundingMode.RNE)
+    if let sexp!{roundNearestTiesToAway} := e then
+      return (mkRoundingMode, toExpr RoundingMode.RNA)
+    if let sexp!{RNA} := e then
+      return (mkRoundingMode, toExpr RoundingMode.RNA)
+    if let sexp!{roundTowardPositive} := e then
+      return (mkRoundingMode, toExpr RoundingMode.RTP)
+    if let sexp!{RTP} := e then
+      return (mkRoundingMode, toExpr RoundingMode.RTP)
+    if let sexp!{roundTowardNegative} := e then
+      return (mkRoundingMode, toExpr RoundingMode.RTN)
+    if let sexp!{RTN} := e then
+      return (mkRoundingMode, toExpr RoundingMode.RTN)
+    if let sexp!{roundTowardZero} := e then
+      return (mkRoundingMode, toExpr RoundingMode.RTZ)
+    if let sexp!{RTZ} := e then
+      return (mkRoundingMode, toExpr RoundingMode.RTZ)
+    if let sexp!{(fp {sign} {ex} {sig})} := e then
+      let some ⟨1, sign⟩ := parseBVLiteral? sign | throw m!"Error: expected sign to be a bit-vector literal"
+      let some ⟨eb, ex⟩ := parseBVLiteral? ex | throw m!"Error: expected exponent to be a bit-vector literal"
+      let some ⟨sb, sig⟩ := parseBVLiteral? sig | throw m!"Error: expected significand to be a bit-vector literal"
+      return (mkFloat eb sb, toExpr (PackedFloat.mk sign.msb ex sig))
+    if let sexp!{(_ +oo {eb} {sb})} := e then
+      let eb := eb.serialize.toNat!
+      let sb := sb.serialize.toNat! - 1
+      return (mkFloat eb sb, toExpr (PackedFloat.getInfinity eb sb false))
+    if let sexp!{(_ -oo {eb} {sb})} := e then
+      let eb := eb.serialize.toNat!
+      let sb := sb.serialize.toNat! - 1
+      return (mkFloat eb sb, toExpr (PackedFloat.getInfinity eb sb true))
+    if let sexp!{(_ +zero {eb} {sb})} := e then
+      let eb := eb.serialize.toNat!
+      let sb := sb.serialize.toNat! - 1
+      return (mkFloat eb sb, toExpr (PackedFloat.getZero eb sb false))
+    if let sexp!{(_ -zero {eb} {sb})} := e then
+      let eb := eb.serialize.toNat!
+      let sb := sb.serialize.toNat! - 1
+      return (mkFloat eb sb, toExpr (PackedFloat.getZero eb sb true))
+    if let sexp!{(_ NaN {eb} {sb})} := e then
+      let eb := eb.serialize.toNat!
+      let sb := sb.serialize.toNat! - 1
+      return (mkFloat eb sb, toExpr (PackedFloat.getNaN eb sb))
+    if let sexp!{(fp.abs {x})} := e then
+      let (α, x) ← parseTerm x
+      let (eb, sb) ← getFloatEbSb α
+      return (α, mkApp3 (.const ``abs []) (mkNatLit eb) (mkNatLit sb) x)
+    if let sexp!{(fp.neg {x})} := e then
+      let (α, x) ← parseTerm x
+      let (eb, sb) ← getFloatEbSb α
+      return (α, mkApp3 (.const ``neg []) (mkNatLit eb) (mkNatLit sb) x)
+    if let sexp!{(fp.add {rm} {x} {y})} := e then
+      let (_, rm) ← parseTerm rm
+      let (α, x) ← parseTerm x
+      let (_, y) ← parseTerm y
+      let (eb, sb) ← getFloatEbSb α
+      return (α, mkApp5 (.const ``add []) (mkNatLit eb) (mkNatLit sb) x y rm)
+    if let sexp!{(fp.sub {rm} {x} {y})} := e then
+      let (_, rm) ← parseTerm rm
+      let (α, x) ← parseTerm x
+      let (_, y) ← parseTerm y
+      let (eb, sb) ← getFloatEbSb α
+      return (α, mkApp5 (.const ``sub []) (mkNatLit eb) (mkNatLit sb) x y rm)
+    if let sexp!{(fp.mul {rm} {x} {y})} := e then
+      let (_, rm) ← parseTerm rm
+      let (α, x) ← parseTerm x
+      let (_, y) ← parseTerm y
+      let (eb, sb) ← getFloatEbSb α
+      return (α, mkApp5 (.const ``mul []) (mkNatLit eb) (mkNatLit sb) x y rm)
+    if let sexp!{(fp.div {rm} {x} {y})} := e then
+      let (_, rm) ← parseTerm rm
+      let (α, x) ← parseTerm x
+      let (_, y) ← parseTerm y
+      let (eb, sb) ← getFloatEbSb α
+      return (α, mkApp5 (.const ``div []) (mkNatLit eb) (mkNatLit sb) x y rm)
+    if let sexp!{(fp.fma {rm} {x} {y} {z})} := e then
+      let (_, rm) ← parseTerm rm
+      let (α, x) ← parseTerm x
+      let (_, y) ← parseTerm y
+      let (_, z) ← parseTerm z
+      let (eb, sb) ← getFloatEbSb α
+      return (α, mkApp6 (.const ``fma []) (mkNatLit eb) (mkNatLit sb) x y z rm)
+    if let sexp!{(fp.sqrt {rm} {x})} := e then
+      let (_, rm) ← parseTerm rm
+      let (α, x) ← parseTerm x
+      let (eb, sb) ← getFloatEbSb α
+      return (α, mkApp4 (.const ``sqrt []) (mkNatLit eb) (mkNatLit sb) x rm)
+    if let sexp!{(fp.rem {x} {y})} := e then
+      let (α, x) ← parseTerm x
+      let (_, y) ← parseTerm y
+      let (eb, sb) ← getFloatEbSb α
+      return (α, mkApp4 (.const ``remainder []) (mkNatLit eb) (mkNatLit sb) x y)
+    if let sexp!{(fp.roundToIntegral {rm} {x})} := e then
+      let (_, rm) ← parseTerm rm
+      let (α, x) ← parseTerm x
+      let (eb, sb) ← getFloatEbSb α
+      return (α, mkApp4 (.const ``roundToInt []) (mkNatLit eb) (mkNatLit sb) rm x)
+    if let sexp!{(fp.min {x} {y})} := e then
+      let (α, x) ← parseTerm x
+      let (_, y) ← parseTerm y
+      let (eb, sb) ← getFloatEbSb α
+      return (α, mkApp4 (.const ``flt_min []) (mkNatLit eb) (mkNatLit sb) x y)
+    if let sexp!{(fp.max {x} {y})} := e then
+      let (α, x) ← parseTerm x
+      let (_, y) ← parseTerm y
+      let (eb, sb) ← getFloatEbSb α
+      return (α, mkApp4 (.const ``flt_max []) (mkNatLit eb) (mkNatLit sb) x y)
+    if let sexp!{(fp.leq {x} {y})} := e then
+      let (α, x) ← parseTerm x
+      let (_, y) ← parseTerm y
+      let (eb, sb) ← getFloatEbSb α
+      return (mkBool, mkApp4 (.const ``le []) (mkNatLit eb) (mkNatLit sb) x y)
+    if let sexp!{(fp.lt {x} {y})} := e then
+      let (α, x) ← parseTerm x
+      let (_, y) ← parseTerm y
+      let (eb, sb) ← getFloatEbSb α
+      return (mkBool, mkApp4 (.const ``lt []) (mkNatLit eb) (mkNatLit sb) x y)
+    if let sexp!{(fp.geq {x} {y})} := e then
+      let (α, x) ← parseTerm x
+      let (_, y) ← parseTerm y
+      let (eb, sb) ← getFloatEbSb α
+      return (mkBool, mkApp4 (.const ``ge []) (mkNatLit eb) (mkNatLit sb) x y)
+    if let sexp!{(fp.gt {x} {y})} := e then
+      let (α, x) ← parseTerm x
+      let (_, y) ← parseTerm y
+      let (eb, sb) ← getFloatEbSb α
+      return (mkBool, mkApp4 (.const ``gt []) (mkNatLit eb) (mkNatLit sb) x y)
+    if let sexp!{(fp.eq {x} {y})} := e then
+      let (α, x) ← parseTerm x
+      let (_, y) ← parseTerm y
+      let (eb, sb) ← getFloatEbSb α
+      return (mkBool, mkApp4 (.const ``eq []) (mkNatLit eb) (mkNatLit sb) x y)
+    if let sexp!{(fp.isNormal {x})} := e then
+      let (α, x) ← parseTerm x
+      let (eb, sb) ← getFloatEbSb α
+      return (mkBool, mkApp3 (.const ``PackedFloat.isNorm []) (mkNatLit eb) (mkNatLit sb) x)
+    if let sexp!{(fp.isSubnormal {x})} := e then
+      let (α, x) ← parseTerm x
+      let (eb, sb) ← getFloatEbSb α
+      return (mkBool, mkApp3 (.const ``PackedFloat.isSubnorm []) (mkNatLit eb) (mkNatLit sb) x)
+    if let sexp!{(fp.isZero {x})} := e then
+      let (α, x) ← parseTerm x
+      let (eb, sb) ← getFloatEbSb α
+      return (mkBool, mkApp3 (.const ``PackedFloat.isZero []) (mkNatLit eb) (mkNatLit sb) x)
+    if let sexp!{(fp.isInfinite {x})} := e then
+      let (α, x) ← parseTerm x
+      let (eb, sb) ← getFloatEbSb α
+      return (mkBool, mkApp3 (.const ``PackedFloat.isInfinite []) (mkNatLit eb) (mkNatLit sb) x)
+    if let sexp!{(fp.isNaN {x})} := e then
+      let (α, x) ← parseTerm x
+      let (eb, sb) ← getFloatEbSb α
+      return (mkBool, mkApp3 (.const ``PackedFloat.isNaN []) (mkNatLit eb) (mkNatLit sb) x)
+    if let sexp!{(fp.isNegative {x})} := e then
+      let (α, x) ← parseTerm x
+      let (eb, sb) ← getFloatEbSb α
+      return (mkBool, mkApp3 (.const ``PackedFloat.isNeg []) (mkNatLit eb) (mkNatLit sb) x)
+    if let sexp!{(fp.isPositive {x})} := e then
+      let (α, x) ← parseTerm x
+      let (eb, sb) ← getFloatEbSb α
+      return (mkBool, mkApp3 (.const ``PackedFloat.isPos []) (mkNatLit eb) (mkNatLit sb) x)
+    if let sexp!{((_ to_fp {eb} {sb}) {x})} := e then
+      let eb := eb.serialize.toNat!
+      let sb := sb.serialize.toNat! - 1
+      let (β, x) ← parseTerm x
+      return (mkFloat eb sb, mkApp3 (.const ``PackedFloat.ofBits []) (mkNatLit eb) (mkNatLit sb) x)
     if let some r ← parseVar? e then
       return r
     if let some ⟨w, x⟩ := parseBVLiteral? s then
@@ -415,6 +630,7 @@ where
       let hα ← if α == mkBool
         then pure mkInstBEqBool
         else if α.isAppOfArity ``BitVec 1 then pure (mkInstBEqBitVec (← getBitVecWidth α))
+        else if α.isAppOfArity ``PackedFloat 2 then let (eb, sb) ← getFloatEbSb α; pure (mkInstBEqFloat eb sb)
         else throw m!"Error: unsupported type for `distinct`: {α}"
       let mut acc : Expr := mkApp4 (.const ``bne [0]) α hα as0 as1
       for hi : i in [2:as.length] do
