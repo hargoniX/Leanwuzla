@@ -578,9 +578,11 @@ where
     | sexp!{(define-sort {n} {ps} {b})} :: cmds =>
       go { query with typeDefs := sexp!{(define-sort {n} {ps} {b})} :: query.typeDefs } cmds
     | sexp!{(declare-const {n} {s})} :: cmds =>
-      go { query with funDecls := sexp!{(declare-const {n} {s})} :: query.funDecls } cmds
+      go { query with funDecls := sexp!{(declare-fun {n} () {s})} :: query.funDecls } cmds
     | sexp!{(declare-fun {n} {ps} {s})} :: cmds =>
       go { query with funDecls := sexp!{(declare-fun {n} {ps} {s})} :: query.funDecls } cmds
+    | sexp!{(define-const {n} {s} {b})} :: cmds =>
+      go { query with funDefs := sexp!{(define-fun {n} () {s} {b})} :: query.funDefs } cmds
     | sexp!{(define-fun {n} {ps} {s} {b})} :: cmds =>
       go { query with funDefs := sexp!{(define-fun {n} {ps} {s} {b})} :: query.funDefs } cmds
     | sexp!{(assert {p})} :: cmds =>
