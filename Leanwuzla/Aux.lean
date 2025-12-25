@@ -1,6 +1,9 @@
-module
+-- module
 prelude
-public import Init.Data.BitVec.Basic
+-- public import Init.Data.BitVec.Basic
+-- Temporarily disable module system until Fp supports it
+import Init.Data.BitVec.Basic
+import Fp
 
 public section
 
