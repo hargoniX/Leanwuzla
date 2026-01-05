@@ -5,7 +5,7 @@ open Elab.Tactic.BVDecide
 open Elab.Tactic.BVDecide.Frontend
 
 def runSolver (cnf : CNF Nat) (solver : System.FilePath) (lratPath : System.FilePath)
-    (trimProofs : Bool) (timeout : Nat) (binaryProofs : Bool) :
+    (trimProofs : Bool) (timeout : Nat) (binaryProofs : Bool) (solverMode : SolverMode) :
     CoreM (Except (Array (Bool × Nat)) (Array LRAT.IntAction)) := do
   IO.FS.withTempFile fun cnfHandle cnfPath => do
     withTraceNode `sat (fun _ => return "Serializing SAT problem to DIMACS file") do
@@ -15,7 +15,7 @@ def runSolver (cnf : CNF Nat) (solver : System.FilePath) (lratPath : System.File
 
     let res ←
       withTraceNode `sat (fun _ => return "Running SAT solver") do
-        External.satQuery solver cnfPath lratPath timeout binaryProofs
+        External.satQuery solver cnfPath lratPath timeout binaryProofs solverMode
     if let .sat assignment := res then
       return .error assignment
 
@@ -55,7 +55,7 @@ def decideSmtNoKernel (type : Expr) : SolverM UInt8 := do
 
         let res ←
           withTraceNode `sat (fun _ => return "Obtaining external proof certificate") do
-            runSolver cnf solver lratPath cfg.trimProofs cfg.timeout cfg.binaryProofs
+            runSolver cnf solver lratPath cfg.trimProofs cfg.timeout cfg.binaryProofs cfg.solverMode
 
         match res with
         | .ok cert =>

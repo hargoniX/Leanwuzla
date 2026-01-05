@@ -22,6 +22,7 @@ def _root_.Lean.MVarId.introsP (mvarId : MVarId) : MetaM (Array FVarId × MVarId
   else
     mvarId.introNP n
 
+open Elab.Tactic.BVDecide.Frontend in
 structure Context where
   acNf : Bool
   parseOnly : Bool
@@ -31,6 +32,7 @@ structure Context where
   disableAndFlatten : Bool
   disableEmbeddedConstraintSubst : Bool
   disableKernel : Bool
+  solverMode : SolverMode
 
 abbrev SolverM := ReaderT Context MetaM
 
@@ -50,7 +52,8 @@ def getBVDecideConfig : SolverM Elab.Tactic.BVDecide.Frontend.BVDecideConfig := 
     maxSteps := ctx.maxSteps
     structures := false,
     fixedInt := false,
-    enums := false
+    enums := false,
+    solverMode := ctx.solverMode
   }
 
 def run (x : SolverM α) (ctx : Context) (coreContext : Core.Context) (coreState : Core.State) :

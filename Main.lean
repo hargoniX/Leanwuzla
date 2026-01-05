@@ -108,6 +108,24 @@ section Cli
 
 open Cli
 
+open Elab.Tactic.BVDecide.Frontend
+
+deriving instance Inhabited for SolverMode
+
+instance : ToString SolverMode where
+  toString
+  | .proof          => "proof"
+  | .counterexample => "counterexample"
+  | .default        => "default"
+
+instance : ParseableType SolverMode where
+  name := "SolverMode"
+  parse?
+  | "proof"           => some .proof
+  | "counterexample"  => some .counterexample
+  | "default"         => some .default
+  | _                 => none
+
 unsafe def runLeanwuzlaCmd (p : Parsed) : IO UInt32 := do
   let options := argsToOpts p
   let context := argsToContext p
@@ -162,6 +180,7 @@ where
       disableAndFlatten := p.hasFlag "disableAndFlatten"
       disableEmbeddedConstraintSubst := p.hasFlag "disableEmbeddedConstraintSubst"
       disableKernel := p.hasFlag "disableKernel"
+      solverMode := p.flag! "solverMode" |>.as! SolverMode
     }
 
 unsafe def leanwuzlaCmd : Cmd := `[Cli|
@@ -183,6 +202,7 @@ unsafe def leanwuzlaCmd : Cmd := `[Cli|
     disableAndFlatten; "Disable the and flattening pass."
     disableEmbeddedConstraintSubst; "Disable the embedded constraints substitution pass."
     disableKernel; "Disable the Lean kernel, that is only verify the LRAT cert, no reflection proof"
+    solverMode : SolverMode; "Select the SAT solver configuration to use (`proof`, `counterexample`, `default`)."
 
   ARGS:
     input : String; "Path to the smt2 file to work on"
@@ -194,7 +214,8 @@ unsafe def leanwuzlaCmd : Cmd := `[Cli|
       ("maxRecDepth", toString maxRecDepth.defValue),
       ("pthreshold", toString trace.profiler.threshold.defValue),
       ("maxSteps", toString Lean.Meta.Simp.defaultMaxSteps),
-      ("expthreshold", toString exponentiation.threshold.defValue)
+      ("expthreshold", toString exponentiation.threshold.defValue),
+      ("solverMode", toString SolverMode.proof)
     ]
 ]
 
