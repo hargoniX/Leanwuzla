@@ -17,4 +17,4 @@ supportInterpreter = true
 [[require]]
 scope = "leanprover"
 name = "Cli"
-rev = "nightly-testing"
+rev = "v4.30.0-rc2"

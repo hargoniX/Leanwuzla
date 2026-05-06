@@ -151,7 +151,8 @@ where
       | .rotateRight n => pushUnaryOp s!"(_ rotate_right {n})" (goBVExpr operand)
       | .arithShiftRightConst n => pushBinaryOp s!"bvashr" (goBVExpr operand) (goBVExpr (bvConst w n))
       | .reverse => panic! "Reverse currently not supported in SMTLIB production"
-      | .clz => panic! "Reverse currently not supported in SMTLIB production"
+      | .clz => panic! "Clz currently not supported in SMTLIB production"
+      | .cpop => panic! "Cpop currently not supported in SMTLIB production"
     | .append lhs rhs _ => pushBinaryOp "concat" (goBVExpr lhs) (goBVExpr rhs)
     | .replicate n expr _ => pushUnaryOp s!"(_ repeat {n})" (goBVExpr expr)
     | .shiftLeft lhs rhs => pushBinaryOp "bvshl" (goBVExpr lhs) (goBVExpr rhs)
@@ -421,7 +422,7 @@ where
         |>.setBool `trace.profiler true
         |>.setBool `trace.Meta.Tactic.bv true
         |>.setBool `trace.Meta.Tactic.sat true
-        |>.setNat `trace.profiler.threshold 1
+        |>.set `trace.profiler.threshold 1
 
     try
       withOptions setTraceOptions <| withoutModifyingEnv <| withoutModifyingState <| withFreshTraceState do

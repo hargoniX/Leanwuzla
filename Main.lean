@@ -160,13 +160,13 @@ where
     if p.hasFlag "parseOnly" then
        opts :=
         opts
-          |>.setNat `pp.maxSteps 100000000000000000
-          |>.setNat `pp.deepTerms.threshold 100000000
+          |>.set `pp.maxSteps 100000000000000000
+          |>.set `pp.deepTerms.threshold 100000000
 
-    opts := opts.setNat `maxHeartbeats <| p.flag! "maxHeartbeats" |>.as! Nat
-    opts := opts.setNat `maxRecDepth <| p.flag! "maxRecDepth" |>.as! Nat
-    opts := opts.setNat `trace.profiler.threshold <| p.flag! "pthreshold" |>.as! Nat
-    opts := opts.setNat `exponentiation.threshold <| p.flag! "expthreshold" |>.as! Nat
+    opts := opts.set `maxHeartbeats <| p.flag! "maxHeartbeats" |>.as! Nat
+    opts := opts.set `maxRecDepth <| p.flag! "maxRecDepth" |>.as! Nat
+    opts := opts.set `trace.profiler.threshold <| p.flag! "pthreshold" |>.as! Nat
+    opts := opts.set `exponentiation.threshold <| p.flag! "expthreshold" |>.as! Nat
 
     return opts
 
