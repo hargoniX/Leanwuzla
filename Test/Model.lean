@@ -88,7 +88,11 @@ info: (
 should be exactly the `declare-const`/`declare-fun` symbols, excluding any
 `define-sort`/`define-const`/`define-fun` symbols. -/
 private def declaredNames (cmds : List Sexp) : CommandElabM Unit := runTermElabM fun _ => do
-  let e ← ofExcept <| (Parser.parseQuery (Parser.filterCmds cmds)).run' {}
+  let go : ParserM Expr := do
+    for c in cmds do
+      discard <| Parser.parseCommand c
+    Parser.getGoalType
+  let e ← ofExcept <| go.run' {}
   let mv ← mkFreshExprMVar e
   let (fvars, mv') ← mv.mvarId!.introsP
   mv'.withContext do

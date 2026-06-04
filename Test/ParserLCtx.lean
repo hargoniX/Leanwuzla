@@ -4,7 +4,7 @@ Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Abdalrhman Mohamed
 -/
 import Lean
-import Leanwuzla.Parser
+import Leanwuzla.ParserLCtx
 
 open Lean Elab Command
 
@@ -34,19 +34,3 @@ let i64 := BitVec 64;
 -/
 #guard_msgs in
 #eval elabSexps query1
-
-def query2 : List Sexp :=
-sexps!{
-(define-sort i32 () (_ BitVec 32))
-(define-sort i64 () (_ BitVec 64))
-(declare-fun f (i32 i64) Bool)
-(assert false)
-}
-
-/--
-info: let i32 := BitVec 32;
-let i64 := BitVec 64;
-∀ (f : i32 → i64 → Bool), false = true → False
--/
-#guard_msgs in
-#eval elabSexps query2

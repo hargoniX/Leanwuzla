@@ -1,65 +1,8 @@
 import Cli
 
-import Leanwuzla.Parser
-import Leanwuzla.Basic
-import Leanwuzla.NoKernel
+import Leanwuzla.Driver
 
 open Lean
-
-def parseSmt2File (path : System.FilePath) : MetaM (Expr × Bool) := do
-  let query ← IO.FS.readFile path
-  ofExcept (Parser.parseSmt2Query query)
-
-
-open Meta in
-open Elab in
-def decideSmt (type : Expr) (getModel : Bool) : SolverM UInt8 := do
-  let mv ← Meta.mkFreshExprMVar type
-  let (fvars, mv') ← mv.mvarId!.introsP
-  trace[Meta.Tactic.bv] m!"Working on goal: {mv'}"
-  try
-    mv'.withContext $ IO.FS.withTempFile fun _ lratFile => do
-      let cfg ← SolverM.getBVDecideConfig
-      let ctx ← (Tactic.BVDecide.TacticContext.new lratFile cfg).run' { declName? := `lrat }
-      match ← Tactic.BVDecide.bvDecide' mv' ctx with
-      | .error counterExample =>
-        reportCounterExample fvars getModel counterExample
-      | .ok _ =>
-        let value ← instantiateExprMVars mv
-        Lean.addDecl (.thmDecl { name := ← Lean.mkAuxDeclName, levelParams := [], type, value })
-        logInfo "unsat"
-        return (0 : UInt8)
-  catch e =>
-    -- TODO: improve handling of sat cases. This is a temporary workaround.
-    let message ← e.toMessageData.toString
-    if message.startsWith "None of the hypotheses are in the supported BitVec fragment" then
-      -- We fully support SMT-LIB v2.6. Getting the above error message means the
-      -- goal was reduced to `False` with only `True` as an assumption. Every
-      -- declared constant is then unconstrained, so the model completed entirely
-      -- with default values is a valid one.
-      logInfo "sat"
-      if getModel then
-        mv'.withContext do printModel fvars #[]
-      return (0 : UInt8)
-    else
-      logError m!"Error: {e.toMessageData}"
-      return (1 : UInt8)
-
-def typeCheck (e : Expr) : SolverM UInt8 := do
-  try
-    let defn := .defnDecl {
-      name := ← Lean.mkAuxDeclName
-      levelParams := []
-      type := .sort .zero
-      value := e
-      hints := .regular 0
-      safety := .safe
-    }
-    Lean.addDecl defn
-    return 0
-  catch e =>
-    logError m!"Error: {e.toMessageData}"
-    return 1
 
 /--
 Reports messages on stdout and returns the new total number of errors reported.
@@ -92,17 +35,12 @@ private def reportMessages (msgLog : MessageLog) (opts : Options)
       IO.Process.exit 1
     return numErrors
 
-def parseAndDecideSmt2File : SolverM UInt8 := do
+def parseAndDecideSmt2File : Solver.SolverM UInt8 := do
   try
-    let (goalType, getModel) ← parseSmt2File (← SolverM.getInput)
-    if ← SolverM.getParseOnly then
-      logInfo m!"Goal:\n{goalType}"
-      typeCheck goalType
-    else
-      if ← SolverM.getKernelDisabled then
-        decideSmtNoKernel goalType getModel
-      else
-        decideSmt goalType getModel
+    Driver.runSmt2File
+  catch e =>
+    logError e.toMessageData
+    return 1
   finally
     printTraces
     reportMessages (← Core.getMessageLog) (← getOptions) false {} 0
@@ -110,8 +48,6 @@ def parseAndDecideSmt2File : SolverM UInt8 := do
 section Cli
 
 open Cli
-
-open Elab.Tactic.BVDecide.Frontend
 
 deriving instance Inhabited for Elab.Tactic.BVDecide.SolverMode
 
@@ -137,7 +73,7 @@ unsafe def runLeanwuzlaCmd (p : Parsed) : IO UInt32 := do
   let env ← importModules #[`Std.Tactic.BVDecide, `Leanwuzla.Auxiliary] {} 0 (loadExts := true)
   let coreContext := { fileName := "leanwuzla", fileMap := default, options }
   let coreState := { env }
-  let code ← SolverM.run parseAndDecideSmt2File context coreContext coreState
+  let code ← Solver.SolverM.run parseAndDecideSmt2File context coreContext coreState
   IO.Process.exit code
 where
   argsToOpts (p : Parsed) : Options := Id.run do
@@ -173,7 +109,7 @@ where
 
     return opts
 
-  argsToContext (p : Parsed) : Context :=
+  argsToContext (p : Parsed) : Solver.Context :=
     {
       acNf := p.hasFlag "acnf"
       parseOnly := p.hasFlag "parseOnly"
