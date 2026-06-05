@@ -110,11 +110,12 @@ private def mkBitVecShiftRight (w : Nat) : Expr :=
 
 def smtSymbolToName (s : String) : Name :=
   let s := if s.startsWith "|" && s.endsWith "|" then String.Pos.Raw.extract s (s.rawStartPos + '|') (s.rawEndPos - '|') else s
-  -- Quote the string if a natural translation to Name fails
-  if s.toName == .anonymous then
-    Name.mkSimple s
-  else
-    s.toName
+  -- SMT-LIB symbols are flat (non-hierarchical) strings, so we always build a
+  -- single-component name rather than splitting on `.`. This keeps the exact
+  -- symbol intact -- so it can be printed back faithfully (e.g. in models, see
+  -- `formatSmtSymbol`) -- and avoids conflating distinct symbols that only
+  -- differ in a way `String.toName` normalizes away, such as `a.0` and `a.00`.
+  Name.mkSimple s
 
 /-- Returns two types: the first is the canonical type and the second is the
     user-provided one (mainly for pretty-printing). -/
@@ -562,6 +563,9 @@ structure Query where
   funDecls : List Sexp := []
   funDefs : List Sexp := []
   asserts : List Sexp := []
+  /-- Whether the query contains a `(get-model)` command, in which case a model
+      should be printed when the query is satisfiable. -/
+  getModel : Bool := false
 
 def parseQuery (query : Query) : ParserM Expr := do
   withTypeDefs query.typeDefs <| withFunDecls query.funDecls <| withFunDefs query.funDefs do
@@ -587,6 +591,8 @@ where
       go { query with funDefs := sexp!{(define-fun {n} {ps} {s} {b})} :: query.funDefs } cmds
     | sexp!{(assert {p})} :: cmds =>
       go { query with asserts := sexp!{(assert {p})} :: query.asserts } cmds
+    | sexp!{(get-model)} :: cmds =>
+      go { query with getModel := true } cmds
     -- TODO: We should parse `(check-sat)` command. We currently return `sat` if
     -- `(check-sat)` command is missing.
     | _ :: cmds =>
@@ -595,14 +601,19 @@ where
       { typeDefs := query.typeDefs.reverse
         funDecls := query.funDecls.reverse
         funDefs := query.funDefs.reverse
-        asserts := query.asserts.reverse }
+        asserts := query.asserts.reverse
+        getModel := query.getModel }
 
-def parseSmt2Query (query : String) : Except MessageData Expr :=
+/-- Parse an SMT-LIB2 query, returning the goal expression together with a flag
+    indicating whether a model should be printed (i.e. whether the query
+    contained a `(get-model)` command). -/
+def parseSmt2Query (query : String) : Except MessageData (Expr × Bool) := do
   match Sexp.Parser.manySexps!.run query with
   | Except.error e =>
     .error s!"{e}"
   | Except.ok cmds =>
     let query := filterCmds cmds
-    (parseQuery query).run' {}
+    let e ← (parseQuery query).run' {}
+    return (e, query.getModel)
 
 end Parser
