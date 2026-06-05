@@ -98,10 +98,10 @@ Despite end-to-end verification, three low-probability sources of error remain:
   developed as an integrated tactic for Lean and thus does not natively support the SMT-LIB format.
   To use it in SMT-COMP, we developed a wrapper called `leanwuzla` @leanwuzla that translates
   SMT-LIB queries into Lean propositions for `bv_decide` to decide. This wrapper is not formally verified.
-  However, extensive testing on SMT-LIB 2024 provides high confidence in its correctness.
+  However, extensive testing on SMT-LIB 2025 provides high confidence in its correctness.
 
 2. *Compiler Bugs* in Lean 4, which might produce a binary misaligned with source semantics.
-  Again, successful runs on SMT-LIB 2024 benchmarks offer indirect validation.
+  Again, successful runs on SMT-LIB 2025 benchmarks offer indirect validation.
 
 3. *Kernel Unsoundness*, which could undermine proof checking. The Lean kernel follows the De Bruijn criterion
   @barendregt2005challenge and has a small, audited codebase, making serious soundness failures extremely unlikely.
