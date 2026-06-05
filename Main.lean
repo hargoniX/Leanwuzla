@@ -6,42 +6,44 @@ import Leanwuzla.NoKernel
 
 open Lean
 
-def parseSmt2File (path : System.FilePath) : MetaM Expr := do
+def parseSmt2File (path : System.FilePath) : MetaM (Expr × Bool) := do
   let query ← IO.FS.readFile path
   ofExcept (Parser.parseSmt2Query query)
 
 
 open Meta in
 open Elab in
-def decideSmt (type : Expr) : SolverM UInt8 := do
+def decideSmt (type : Expr) (getModel : Bool) : SolverM UInt8 := do
   let mv ← Meta.mkFreshExprMVar type
-  let (_, mv') ← mv.mvarId!.introsP
+  let (fvars, mv') ← mv.mvarId!.introsP
   trace[Meta.Tactic.bv] m!"Working on goal: {mv'}"
   try
     mv'.withContext $ IO.FS.withTempFile fun _ lratFile => do
       let cfg ← SolverM.getBVDecideConfig
       let ctx ← (Tactic.BVDecide.TacticContext.new lratFile cfg).run' { declName? := `lrat }
-      discard <| Tactic.BVDecide.bvDecide mv' ctx
+      match ← Tactic.BVDecide.bvDecide' mv' ctx with
+      | .error counterExample =>
+        reportCounterExample fvars getModel counterExample
+      | .ok _ =>
+        let value ← instantiateExprMVars mv
+        Lean.addDecl (.thmDecl { name := ← Lean.mkAuxDeclName, levelParams := [], type, value })
+        logInfo "unsat"
+        return (0 : UInt8)
   catch e =>
     -- TODO: improve handling of sat cases. This is a temporary workaround.
     let message ← e.toMessageData.toString
-    if message.startsWith "The prover found a counterexample" ||
-       message.startsWith "None of the hypotheses are in the supported BitVec fragment" then
-      -- We fully support SMT-LIB v2.6. Getting the above error message means
-      -- the goal was reduced to `False` with only `True` as an assumption.
+    if message.startsWith "None of the hypotheses are in the supported BitVec fragment" then
+      -- We fully support SMT-LIB v2.6. Getting the above error message means the
+      -- goal was reduced to `False` with only `True` as an assumption. Every
+      -- declared constant is then unconstrained, so the model completed entirely
+      -- with default values is a valid one.
       logInfo "sat"
+      if getModel then
+        mv'.withContext do printModel fvars #[]
       return (0 : UInt8)
     else
       logError m!"Error: {e.toMessageData}"
       return (1 : UInt8)
-  let value ← instantiateExprMVars mv
-  try
-    Lean.addDecl (.thmDecl { name := ← Lean.mkAuxDeclName, levelParams := [], type, value })
-    logInfo "unsat"
-    return 0
-  catch e =>
-    logError m!"Error: {e.toMessageData}"
-    return 1
 
 def typeCheck (e : Expr) : SolverM UInt8 := do
   try
@@ -92,15 +94,15 @@ private def reportMessages (msgLog : MessageLog) (opts : Options)
 
 def parseAndDecideSmt2File : SolverM UInt8 := do
   try
-    let goalType ← parseSmt2File (← SolverM.getInput)
+    let (goalType, getModel) ← parseSmt2File (← SolverM.getInput)
     if ← SolverM.getParseOnly then
       logInfo m!"Goal:\n{goalType}"
       typeCheck goalType
     else
       if ← SolverM.getKernelDisabled then
-        decideSmtNoKernel goalType
+        decideSmtNoKernel goalType getModel
       else
-        decideSmt goalType
+        decideSmt goalType getModel
   finally
     printTraces
     reportMessages (← Core.getMessageLog) (← getOptions) false {} 0

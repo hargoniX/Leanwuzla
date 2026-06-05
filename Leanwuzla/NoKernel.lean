@@ -1,4 +1,8 @@
-import Leanwuzla.Basic
+module
+
+public import Leanwuzla.Basic
+import all Lean.Meta.Tactic.BVDecide
+
 
 open Lean Std.Sat Std.Tactic.BVDecide
 open Meta.Tactic.BVDecide
@@ -24,17 +28,24 @@ def runSolver (cnf : CNF Nat) (solver : System.FilePath) (lratPath : System.File
 
     return .ok lratProof
 
-def decideSmtNoKernel (type : Expr) : SolverM UInt8 := do
+public def decideSmtNoKernel (type : Expr) (getModel : Bool) : SolverM UInt8 := do
   let solver ← determineSolver
   let g := (← Meta.mkFreshExprMVar type).mvarId!
-  let (_, g) ← g.introsP
+  let (fvars, g) ← g.introsP
   trace[Meta.Tactic.bv] m!"Working on goal: {g}"
   try
     g.withContext $ IO.FS.withTempFile fun _ lratPath => do
       let cfg ← SolverM.getBVDecideConfig
       match ← Normalize.bvNormalize g cfg with
       | some g =>
-        let bvExpr := (← M.run <| reflectBV g).bvExpr
+        -- Reflect the goal and, at the same time, record the atom assignment so
+        -- that we can reconstruct a model if the query turns out to be sat.
+        let (bvExpr, atomsAssignment, unusedHypotheses) ← M.run do
+          let reflectionResult ← reflectBV g
+          let flipper := fun (expr, {width, atomNumber, synthetic}) =>
+            (atomNumber, (width, expr, synthetic))
+          let atomsAssignment := Std.HashMap.ofList ((← getThe State).atoms.toList.map flipper)
+          return (reflectionResult.bvExpr, atomsAssignment, reflectionResult.unusedHypotheses)
 
         let entry ←
           withTraceNode `bv (fun _ => return "Bitblasting BVLogicalExpr to AIG") do
@@ -43,7 +54,7 @@ def decideSmtNoKernel (type : Expr) : SolverM UInt8 := do
         let aigSize := entry.aig.decls.size
         trace[Meta.Tactic.bv] s!"AIG has {aigSize} nodes."
 
-        let (cnf, _) ←
+        let (cnf, map) ←
           withTraceNode `sat (fun _ => return "Converting AIG to CNF") do
             -- lazyPure to prevent compiler lifting
             IO.lazyPure (fun _ =>
@@ -68,9 +79,9 @@ def decideSmtNoKernel (type : Expr) : SolverM UInt8 := do
           else
             logInfo "Error: Failed to check LRAT cert"
             return (1 : UInt8)
-        | .error .. =>
-          logInfo "sat"
-          return (0 : UInt8)
+        | .error assignment =>
+          let equations := reconstructCounterExample map assignment aigSize atomsAssignment
+          reportCounterExample fvars getModel { goal := g, unusedHypotheses, equations }
       | none =>
         logInfo "unsat"
         return (0 : UInt8)
@@ -78,9 +89,13 @@ def decideSmtNoKernel (type : Expr) : SolverM UInt8 := do
     -- TODO: improve handling of sat cases. This is a temporary workaround.
     let message ← e.toMessageData.toString
     if message.startsWith "None of the hypotheses are in the supported BitVec fragment" then
-      -- We fully support SMT-LIB v2.6. Getting the above error message means
-      -- the goal was reduced to `False` with only `True` as an assumption.
+      -- We fully support SMT-LIB v2.6. Getting the above error message means the
+      -- goal was reduced to `False` with only `True` as an assumption. Every
+      -- declared constant is then unconstrained, so the model completed entirely
+      -- with default values is a valid one.
       logInfo "sat"
+      if getModel then
+        g.withContext do printModel fvars #[]
       return (0 : UInt8)
     else
       logError m!"Error: {e.toMessageData}"
