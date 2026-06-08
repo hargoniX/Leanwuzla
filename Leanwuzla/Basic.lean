@@ -1,4 +1,4 @@
-import Lean.Elab.Tactic.BVDecide.Frontend.BVDecide
+import Lean.Meta.Tactic.BVDecide
 
 open Lean
 
@@ -22,7 +22,7 @@ def _root_.Lean.MVarId.introsP (mvarId : MVarId) : MetaM (Array FVarId × MVarId
   else
     mvarId.introNP n
 
-open Elab.Tactic.BVDecide.Frontend in
+open Meta.Tactic.BVDecide in
 structure Context where
   acNf : Bool
   parseOnly : Bool
@@ -32,7 +32,7 @@ structure Context where
   disableAndFlatten : Bool
   disableEmbeddedConstraintSubst : Bool
   disableKernel : Bool
-  solverMode : SolverMode
+  solverMode : Elab.Tactic.BVDecide.SolverMode
 
 abbrev SolverM := ReaderT Context MetaM
 
@@ -42,7 +42,7 @@ def getParseOnly : SolverM Bool := return (← read).parseOnly
 def getInput : SolverM String := return (← read).input
 def getKernelDisabled : SolverM Bool := return (← read).disableKernel
 
-def getBVDecideConfig : SolverM Elab.Tactic.BVDecide.Frontend.BVDecideConfig := do
+def getBVDecideConfig : SolverM Elab.Tactic.BVDecide.BVDecideConfig := do
   let ctx ← read
   return {
     timeout := ctx.timeout

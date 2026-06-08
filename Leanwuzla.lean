@@ -3,7 +3,7 @@ Copyright (c) 2024 Lean FRO, LLC. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Henrik Böving
 -/
-import Lean.Elab.Tactic.BVDecide.Frontend.BVDecide
+import Lean.Meta.Tactic.BVDecide
 
 open Lean.Parser.Tactic
 
@@ -25,6 +25,7 @@ open Std.Sat
 open Std.Tactic.BVDecide
 open Std.Tactic.BVDecide.Reflect
 open Lean.Meta
+open Lean.Meta.Tactic.BVDecide
 
 
 partial def toSMT (expr : BVLogicalExpr) (atomsAssignment : Std.HashMap Nat (Nat × Expr × Bool)) : String :=
@@ -116,7 +117,7 @@ where
       let binStr := t ++ s
       push "#b"
       push binStr
-    | .extract start len expr => pushUnaryOp s!"(_ extract {len - 1 + start} {start})" (goBVExpr expr)
+    | .extract start _ expr => pushUnaryOp s!"(_ extract {w - 1 + start} {start})" (goBVExpr expr)
     | .bin lhs op rhs =>
       let lhs := goBVExpr lhs
       let rhs := goBVExpr rhs
@@ -206,7 +207,7 @@ def bitwuzlaSuccess : String := "Bitwuzla thinks it's right but can't trust the 
 
 def bitwuzla (g : MVarId) (reflectionResult : ReflectionResult) (atomsAssignment : Std.HashMap Nat (Nat × Expr × Bool))
     (solverPath : System.FilePath) (cfg : BVDecideConfig) :
-    MetaM (Except CounterExample UnsatProver.Result) := do
+    MetaM (Except CounterExample (UnsatProver.Result Unit)) := do
   let smt := toSMT reflectionResult.bvExpr atomsAssignment
   trace[Meta.Tactic.bv] s!"Encoded as SMT: {smt}"
   let res ←
@@ -217,12 +218,12 @@ def bitwuzla (g : MVarId) (reflectionResult : ReflectionResult) (atomsAssignment
         smtQuery solverPath path cfg.timeout
   match res with
   | .sat .. => return .error ⟨g, {}, #[]⟩
-  | .unsat => return .ok ⟨mkApp (mkConst ``bitwuzlaCorrect) (toExpr reflectionResult.bvExpr), ""⟩
+  | .unsat => return .ok ⟨mkApp (mkConst ``bitwuzlaCorrect) (toExpr reflectionResult.bvExpr), ()⟩
 
 def bvBitwuzla (g : MVarId) (solverPath : System.FilePath) (cfg : BVDecideConfig) :
     MetaM (Except CounterExample Unit) := do
   let some g ← Normalize.bvNormalize g cfg | return .ok ()
-  let unsatProver : UnsatProver := fun g reflectionResult atomsAssignment => do
+  let unsatProver : UnsatProver Unit := fun g reflectionResult atomsAssignment => do
     withTraceNode `bv (fun _ => return "Preparing LRAT reflection term") do
       bitwuzla g reflectionResult atomsAssignment solverPath cfg
   match ← closeWithBVReflection g unsatProver with

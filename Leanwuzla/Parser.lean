@@ -1,4 +1,4 @@
-import Leanwuzla.Aux
+import Leanwuzla.Auxiliary
 import Leanwuzla.Sexp
 
 open Lean

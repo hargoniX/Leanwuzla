@@ -5,6 +5,8 @@ Authors: Henrik Böving
 -/
 import Leanwuzla
 
+#exit
+
 variable (a b c : Bool)
 variable (x y z : BitVec 32)
 

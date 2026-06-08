@@ -11,6 +11,7 @@ def parseSmt2File (path : System.FilePath) : MetaM Expr := do
   ofExcept (Parser.parseSmt2Query query)
 
 
+open Meta in
 open Elab in
 def decideSmt (type : Expr) : SolverM UInt8 := do
   let mv ← Meta.mkFreshExprMVar type
@@ -19,8 +20,8 @@ def decideSmt (type : Expr) : SolverM UInt8 := do
   try
     mv'.withContext $ IO.FS.withTempFile fun _ lratFile => do
       let cfg ← SolverM.getBVDecideConfig
-      let ctx ← (Tactic.BVDecide.Frontend.TacticContext.new lratFile cfg).run' { declName? := `lrat }
-      discard <| Tactic.BVDecide.Frontend.bvDecide mv' ctx
+      let ctx ← (Tactic.BVDecide.TacticContext.new lratFile cfg).run' { declName? := `lrat }
+      discard <| Tactic.BVDecide.bvDecide mv' ctx
   catch e =>
     -- TODO: improve handling of sat cases. This is a temporary workaround.
     let message ← e.toMessageData.toString
@@ -110,15 +111,15 @@ open Cli
 
 open Elab.Tactic.BVDecide.Frontend
 
-deriving instance Inhabited for SolverMode
+deriving instance Inhabited for Elab.Tactic.BVDecide.SolverMode
 
-instance : ToString SolverMode where
+instance : ToString Elab.Tactic.BVDecide.SolverMode where
   toString
   | .proof          => "proof"
   | .counterexample => "counterexample"
   | .default        => "default"
 
-instance : ParseableType SolverMode where
+instance : ParseableType Elab.Tactic.BVDecide.SolverMode where
   name := "SolverMode"
   parse?
   | "proof"           => some .proof
@@ -131,7 +132,7 @@ unsafe def runLeanwuzlaCmd (p : Parsed) : IO UInt32 := do
   let context := argsToContext p
   Lean.initSearchPath (← Lean.findSysroot)
   enableInitializersExecution
-  let env ← importModules #[`Std.Tactic.BVDecide, `Leanwuzla.Aux] {} 0 (loadExts := true)
+  let env ← importModules #[`Std.Tactic.BVDecide, `Leanwuzla.Auxiliary] {} 0 (loadExts := true)
   let coreContext := { fileName := "leanwuzla", fileMap := default, options }
   let coreState := { env }
   let code ← SolverM.run parseAndDecideSmt2File context coreContext coreState
@@ -180,7 +181,7 @@ where
       disableAndFlatten := p.hasFlag "disableAndFlatten"
       disableEmbeddedConstraintSubst := p.hasFlag "disableEmbeddedConstraintSubst"
       disableKernel := p.hasFlag "disableKernel"
-      solverMode := p.flag! "solverMode" |>.as! SolverMode
+      solverMode := p.flag! "solverMode" |>.as! Elab.Tactic.BVDecide.SolverMode
     }
 
 unsafe def leanwuzlaCmd : Cmd := `[Cli|
@@ -202,7 +203,7 @@ unsafe def leanwuzlaCmd : Cmd := `[Cli|
     disableAndFlatten; "Disable the and flattening pass."
     disableEmbeddedConstraintSubst; "Disable the embedded constraints substitution pass."
     disableKernel; "Disable the Lean kernel, that is only verify the LRAT cert, no reflection proof"
-    solverMode : SolverMode; "Select the SAT solver configuration to use (`proof`, `counterexample`, `default`)."
+    solverMode : Elab.Tactic.BVDecide.SolverMode; "Select the SAT solver configuration to use (`proof`, `counterexample`, `default`)."
 
   ARGS:
     input : String; "Path to the smt2 file to work on"
@@ -215,7 +216,7 @@ unsafe def leanwuzlaCmd : Cmd := `[Cli|
       ("pthreshold", toString trace.profiler.threshold.defValue),
       ("maxSteps", toString Lean.Meta.Simp.defaultMaxSteps),
       ("expthreshold", toString exponentiation.threshold.defValue),
-      ("solverMode", toString SolverMode.proof)
+      ("solverMode", toString Lean.Elab.Tactic.BVDecide.SolverMode.proof)
     ]
 ]
 

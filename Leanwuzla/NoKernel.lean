@@ -1,11 +1,10 @@
 import Leanwuzla.Basic
 
 open Lean Std.Sat Std.Tactic.BVDecide
-open Elab.Tactic.BVDecide
-open Elab.Tactic.BVDecide.Frontend
+open Meta.Tactic.BVDecide
 
 def runSolver (cnf : CNF Nat) (solver : System.FilePath) (lratPath : System.FilePath)
-    (trimProofs : Bool) (timeout : Nat) (binaryProofs : Bool) (solverMode : SolverMode) :
+    (trimProofs : Bool) (timeout : Nat) (binaryProofs : Bool) (solverMode : Elab.Tactic.BVDecide.SolverMode) :
     CoreM (Except (Array (Bool × Nat)) (Array LRAT.IntAction)) := do
   IO.FS.withTempFile fun cnfHandle cnfPath => do
     withTraceNode `sat (fun _ => return "Serializing SAT problem to DIMACS file") do
