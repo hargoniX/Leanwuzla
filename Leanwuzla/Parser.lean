@@ -352,6 +352,45 @@ where
       let (α, x) ← parseTerm x
       let w ← getBitVecWidth α
       return (α, mkApp3 (.const ``BitVec.rotateRight []) (mkNatLit w) x (mkNatLit i))
+    if let sexp!{(bvnego {x})} := e then
+      let (α, x) ← parseTerm x
+      let w ← getBitVecWidth α
+      return (mkBool, mkApp2 (.const ``BitVec.negOverflow []) (mkNatLit w) x)
+    if let sexp!{(bvuaddo {x} {y})} := e then
+      let (α, x) ← parseTerm x
+      let (_, y) ← parseTerm y
+      let w ← getBitVecWidth α
+      return (mkBool, mkApp3 (.const ``BitVec.uaddOverflow []) (mkNatLit w) x y)
+    if let sexp!{(bvsaddo {x} {y})} := e then
+      let (α, x) ← parseTerm x
+      let (_, y) ← parseTerm y
+      let w ← getBitVecWidth α
+      return (mkBool, mkApp3 (.const ``BitVec.saddOverflow []) (mkNatLit w) x y)
+    if let sexp!{(bvumulo {x} {y})} := e then
+      let (α, x) ← parseTerm x
+      let (_, y) ← parseTerm y
+      let w ← getBitVecWidth α
+      return (mkBool, mkApp3 (.const ``BitVec.umulOverflow []) (mkNatLit w) x y)
+    if let sexp!{(bvsmulo {x} {y})} := e then
+      let (α, x) ← parseTerm x
+      let (_, y) ← parseTerm y
+      let w ← getBitVecWidth α
+      return (mkBool, mkApp3 (.const ``BitVec.smulOverflow []) (mkNatLit w) x y)
+    if let sexp!{(bvusubo {x} {y})} := e then
+      let (α, x) ← parseTerm x
+      let (_, y) ← parseTerm y
+      let w ← getBitVecWidth α
+      return (mkBool, mkApp3 (.const ``BitVec.usubOverflow []) (mkNatLit w) x y)
+    if let sexp!{(bvssubo {x} {y})} := e then
+      let (α, x) ← parseTerm x
+      let (_, y) ← parseTerm y
+      let w ← getBitVecWidth α
+      return (mkBool, mkApp3 (.const ``BitVec.ssubOverflow []) (mkNatLit w) x y)
+    if let sexp!{(bvsdivo {x} {y})} := e then
+      let (α, x) ← parseTerm x
+      let (_, y) ← parseTerm y
+      let w ← getBitVecWidth α
+      return (mkBool, mkApp3 (.const ``BitVec.sdivOverflow []) (mkNatLit w) x y)
     if let some r ← parseVar? e then
       return r
     if let some ⟨w, x⟩ := parseBVLiteral? s then
