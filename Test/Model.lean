@@ -3,7 +3,7 @@ Copyright (c) 2024 Lean FRO, LLC. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Abdalrhman Mohamed
 -/
-import Leanwuzla.ParserLCtx
+import Leanwuzla.Parser
 import Leanwuzla.Basic
 
 open Lean Meta Elab Command

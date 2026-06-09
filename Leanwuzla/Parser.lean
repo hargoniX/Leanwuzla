@@ -3,51 +3,42 @@ import Leanwuzla.Sexp
 
 open Lean
 
-namespace Parser
-
-/--
-A wrapper that will eventually be placed around the running goal. The parser
-accumulates a list of binders as it walks the SMT-LIB file; the driver calls
-`getGoalType` once it decides to solve.
--/
-inductive Binder where
-  /-- `∀ n : t, _` -/
-  | forallE (n : Name) (t : Expr) (bi : BinderInfo := .default)
-  /-- `let n : t := v; _` (with `nonDep` controlling whether the kernel
-      unfolds the let non-dependently). -/
-  | letE (n : Name) (t : Expr) (v : Expr) (nonDep : Bool)
-  /-- `(assert p)`, optionally `(assert (! p :named label))`. Applied as
-      `∀ label : p = true, _`. Storing the label here lets us recover the
-      labeled assertions in source order for an unsat core. -/
-  | assert (label? : Option Name) (p : Expr)
-
-def Binder.apply : Binder → Expr → Expr
-  | .forallE n t bi, body => .forallE n t body bi
-  | .letE n t v nonDep, body => .letE n t v body nonDep
-  | .assert label? p, body =>
-    let ann := mkApp3 (.const ``Eq [1]) (.const ``Bool []) p (.const ``true [])
-    .forallE (label?.getD .anonymous) ann body .default
-
-end Parser
-
 structure Parser.State where
-  /-- Current de Bruijn level. -/
+  /-- Current de Bruijn level for bound variables introduced by function/sort
+      parameters and term-level `let` expressions. Top-level declarations and
+      assertions do not bump this level — they live in `lctx`. -/
   level : Nat := 0
-  /-- A mapping from variable names to their corresponding type and de Bruijn
-      level (not index). So, the variables are indexed from the bottom of the
-      stack rather than from the top (i.e., the order in which the symbols are
-      introduced in the SMT-LIB file). To compute the de Bruijn index, we
-      subtract the variable's level from the current level. -/
+  /-- Name generator used to mint fresh `FVarId`s for top-level declarations
+      and assertions. `MetaM` maintains the invariant that every `FVarId` in
+      scope descends from its name generator, so callers that intend to use
+      the generated `lctx` inside `MetaM` must seed this from `MetaM`'s name
+      generator before parsing and write it back afterwards (see
+      `Driver.runParser`). -/
+  ngen : NameGenerator := {}
+  /-- A mapping from SMT-LIB symbol names to (canonical type, de Bruijn level)
+      for **bound** variables only — function and sort parameters and
+      term-level `let`-bindings. The corresponding de Bruijn index at a use
+      site is `state.level - level - 1`. Free variables are not stored here;
+      they are resolved via `fvars` and `lctx`. -/
   bvars : Std.HashMap Name (Expr × Nat) := {}
+  /-- A mapping from SMT-LIB symbol names introduced by top-level declarations
+      and definitions to (canonical type, `FVarId`). The canonical type is
+      used for type-class resolution; the user-facing type (the one that
+      should appear in the goal) is stored as the corresponding decl's type
+      in `lctx`, along with any value, binder info, etc. -/
+  fvars : Std.HashMap Name (Expr × FVarId) := {}
   /-- A mapping from user-defined types (i.e., aliases) to their corresponding
       canonical types. We need this mapping to provide correct type-class
       instances for user-defined types. -/
   uvars : Std.HashMap Name Expr := {}
-  /-- Accumulated wrapper binders, stored in source order (most recently
-      introduced last). Folded by `getGoalType` to produce the final goal.
-      Labelled assertions (`Binder.assert (some label) p`) can be recovered
-      from this array via `getNamedAssertions`. -/
-  binders : Array Binder := #[]
+  /-- The local context accumulated for top-level declarations and assertions
+      in source order. Folded by `getGoalType` via `LocalContext.mkForall` to
+      produce the final goal. -/
+  lctx : LocalContext := {}
+  /-- `FVarId`s of top-level `declare-const`/`declare-fun` symbols in
+      declaration order. `(get-model)` prints a `define-fun` for exactly
+      these. -/
+  consts : Array FVarId := #[]
   /-- Remaining input. Initialised by the driver from the SMT-LIB file
       contents; the parser advances it one s-expression at a time. -/
   input : Sigma String.Pos := ⟨"", "".startPos⟩
@@ -71,9 +62,45 @@ private def runParsec (p : Std.Internal.Parsec.String.Parser α) : ParserM α :=
   | .error _ err =>
     throw m!"Error: parse error: {err}"
 
-/-- Push a wrapper binder onto the parser's accumulator. -/
-private def pushBinder (b : Binder) : ParserM Unit :=
-  modify fun s => { s with binders := s.binders.push b }
+/-- Generate a fresh `FVarId` from the state's `NameGenerator`. As long as the
+    generator was seeded from `MetaM`'s (and is synced back), the id is
+    globally fresh: it can collide neither with existing `FVarId`s nor with
+    ones `MetaM` mints later. -/
+private def mkFreshFVarId : ParserM FVarId := do
+  let state ← get
+  set { state with ngen := state.ngen.next }
+  return ⟨state.ngen.curr⟩
+
+/--
+Push a `cdecl` (forall-style binder) onto `lctx`. If `canonicalType?` is
+`some ct`, the symbol is registered in `fvars` (paired with `ct`) so that
+subsequent references can resolve it and type-class lookups use `ct`; if
+`none` — as for assertions — the symbol is not name-resolvable but its decl
+still contributes to the goal.
+-/
+private def pushCDecl
+    (userName : Name) (userType : Expr) (canonicalType? : Option Expr := none)
+    (bi : BinderInfo := .default) : ParserM FVarId := do
+  let fvarId ← mkFreshFVarId
+  modify fun s => { s with
+    lctx := s.lctx.mkLocalDecl fvarId userName userType bi
+    fvars := match canonicalType? with
+      | some ct => s.fvars.insert userName (ct, fvarId)
+      | none    => s.fvars }
+  return fvarId
+
+/--
+Push an `ldecl` (let-style binder) onto `lctx` and register its name in
+`fvars` with the supplied canonical type.
+-/
+private def pushLDecl
+    (userName : Name) (userType : Expr) (canonicalType : Expr)
+    (value : Expr) (nonDep : Bool) : ParserM FVarId := do
+  let fvarId ← mkFreshFVarId
+  modify fun s => { s with
+    lctx := s.lctx.mkLetDecl fvarId userName userType value nonDep
+    fvars := s.fvars.insert userName (canonicalType, fvarId) }
+  return fvarId
 
 private def mkBool : Expr :=
   .const ``Bool []
@@ -170,8 +197,9 @@ def smtSymbolToName (s : String) : Name :=
   -- differ in a way `String.toName` normalizes away, such as `a.0` and `a.00`.
   Name.mkSimple s
 
-/-- Returns two types: the first is the canonical type and the second is the
-    user-provided one (mainly for pretty-printing). -/
+/-- Returns two types: the first is the canonical type (used for type-class
+    resolution) and the second is the user-provided one (which appears in the
+    goal). They differ when user-defined sort aliases are involved. -/
 def parseSort (s  : Sexp) : ParserM (Expr × Expr) := do
   match s with
   | sexp!{Bool} =>
@@ -185,10 +213,20 @@ def parseSort (s  : Sexp) : ParserM (Expr × Expr) := do
     let (bas, as) := as.unzip
     return (mkAppN bsc bas.toArray, mkAppN sc as.toArray)
   | .atom n =>
-    let state ← get
     let n := smtSymbolToName n
-    let some (.sort 1, i) := state.bvars[n]? | throw m!"Error: unexpected sort {s}"
-    let ut := .bvar (state.level - i - 1)
+    let state ← get
+    -- A bare sort atom must resolve to something of canonical type `Sort 1`.
+    -- Bound vars get a `.bvar`; free vars (top-level `define-sort` aliases)
+    -- get a `.fvar` so the alias is preserved in the goal.
+    let ut : Expr ←
+      if let some (t, i) := state.bvars[n]? then do
+        unless t == .sort 1 do throw m!"Error: unexpected sort {s}"
+        pure (.bvar (state.level - i - 1))
+      else if let some (t, fvarId) := state.fvars[n]? then do
+        unless t == .sort 1 do throw m!"Error: unexpected sort {s}"
+        pure (.fvar fvarId)
+      else
+        throw m!"Error: unexpected sort {s}"
     let ct := match state.uvars[n]? with
       | some ct => ct
       | none    => ut
@@ -460,8 +498,17 @@ where
     let .atom n := s | return none
     let state ← get
     let n := smtSymbolToName n
-    let some (t, i) := state.bvars[n]? | return none
-    return some (t, .bvar (state.level - i - 1))
+    -- Bound variables (function/sort parameters, term-level `let` bindings)
+    -- live in `bvars` with their canonical type and de Bruijn level.
+    if let some (t, i) := state.bvars[n]? then
+      return some (t, .bvar (state.level - i - 1))
+    -- Free variables (top-level declarations and definitions): `fvars` gives
+    -- us the canonical type for callers (e.g. for picking a `BEq` instance);
+    -- the `FVarId` references the decl in `lctx` whose `userType` will appear
+    -- in the goal.
+    if let some (t, fvarId) := state.fvars[n]? then
+      return some (t, .fvar fvarId)
+    return none
   parseBVLiteral? (s : Sexp) : Option ((w : Nat) × BitVec w) :=
     match s with
     | sexp!{(_ {.atom v} {.atom w})} =>
@@ -576,21 +623,20 @@ inductive Command where
 
 private def parseTypeDef : Sexp → ParserM Unit
   | sexp!{(define-sort {n} (⦃ps⦄) {b})} => do
-    let state ← get
+    let savedState ← get
     let ps ← ps.mapM parseParam
     let rt := .sort 1
     let (cb, ub) ← parseSort b
     let n := smtSymbolToName n.serialize
-    let t := ps.foldr (fun (n, t) b => .forallE n t b .default) rt
-    let bv := ps.foldr (fun (n, t) b => .lam n t b .default) cb
-    let nv := ps.foldr (fun (n, t) b => .lam n t b .default) ub
-    let bvars := state.bvars.insert n (t, state.level)
-    let uvars := state.uvars.insert n bv
-    let level := state.level + 1
-    set { state with level, bvars, uvars }
+    let t := ps.foldr (fun (pn, pt) acc => Expr.forallE pn pt acc .default) rt
+    let bv := ps.foldr (fun (pn, pt) acc => Expr.lam pn pt acc .default) cb
+    let nv := ps.foldr (fun (pn, pt) acc => Expr.lam pn pt acc .default) ub
+    -- Discard the parameter bvars/level introduced for body parsing.
+    set savedState
+    modify fun s => { s with uvars := s.uvars.insert n bv }
     -- Non-dependent let unfolding is disabled for user-defined types to keep
     -- type-class resolution happy.
-    pushBinder (.letE n t nv false)
+    let _ ← pushLDecl n t t nv false
   | defn =>
     throw m!"Error: unsupported type def {defn}"
 where
@@ -599,43 +645,47 @@ where
     | .atom n =>
       let n := smtSymbolToName n
       let t := .sort 1
-      modify fun state => { state with level := state.level + 1, bvars := state.bvars.insert n (t, state.level) }
+      modify fun s => { s with level := s.level + 1, bvars := s.bvars.insert n (t, s.level) }
       return (n, t)
     | _ =>
       throw m!"Error: unsupported type param {p}"
 
 private def parseFunDecl : Sexp → ParserM Unit
   | sexp!{(declare-fun {n} (⦃ps⦄) {s})} => do
-    let state ← get
-    let ps ← ps.mapM parseParamSort
+    let ps ← ps.mapM parseSort
     let (crt, urt) ← parseSort s
     let n := smtSymbolToName n.serialize
-    let (ct, ut) := ps.foldr (fun (ct, ut) (cb, ub) => (.forallE n ct cb .default, .forallE n ut ub .default)) (crt, urt)
-    let bvars := state.bvars.insert n (ct, state.level)
-    let level := state.level + 1
-    set { state with bvars, level }
-    pushBinder (.forallE n ut)
+    let (ct, ut) := ps.foldr
+      (fun (cb, ub) (ct, ut) =>
+        (Expr.forallE n cb ct .default, Expr.forallE n ub ut .default))
+      (crt, urt)
+    let fvarId ← pushCDecl n ut (canonicalType? := some ct)
+    -- Record declared constants in declaration order for `(get-model)`.
+    modify fun s => { s with consts := s.consts.push fvarId }
   | decl =>
     throw m!"Error: unsupported fun decl {decl}"
-where
-  parseParamSort (s : Sexp) : ParserM (Expr × Expr) := do
-    let tp ← parseSort s
-    modify fun state => { state with level := state.level + 1 }
-    return tp
 
 private def parseFunDef : Sexp → ParserM Unit
   | sexp!{(define-fun {n} (⦃ps⦄) {s} {b})} => do
-    let state ← get
+    let savedState ← get
     let ps ← ps.mapM parseParam
     let (crt, urt) ← parseSort s
     let (_, b) ← parseTerm b
     let n := smtSymbolToName n.serialize
-    let (ct, ut) := ps.foldr (fun (n, ct, ut) (cb, ub) => (.forallE n ct cb .default, .forallE n ut ub .default)) (crt, urt)
-    let v := ps.foldr (fun (n, _, t) b => .lam n t b .default) b
-    let bvars := state.bvars.insert n (ct, state.level)
-    let level := state.level + 1
-    set { state with bvars, level }
-    pushBinder (.letE n ut v true)
+    let (ct, ut) := ps.foldr
+      (fun (pn, cb, ub) (ct, ut) =>
+        (Expr.forallE pn cb ct .default, Expr.forallE pn ub ut .default))
+      (crt, urt)
+    -- The body was parsed using canonical types in `bvars`; wrap it in
+    -- lambdas whose binder types are user-facing so the goal shows aliases.
+    let v := ps.foldr (fun (pn, _, ub) acc => Expr.lam pn ub acc .default) b
+    -- Discard the parameter bvars/level introduced for body parsing.
+    set savedState
+    -- The decl must be a dependent `let` (`nonDep := false`): a non-dependent
+    -- `ldecl` is semantically a `have`, whose value `MetaM` treats as opaque —
+    -- `bv_decide`'s `zetaDelta` preprocessing would then leave the defined
+    -- symbol as a free atom in the assertions, relaxing the problem.
+    let _ ← pushLDecl n ut ct v false
   | defn =>
     throw m!"Error: unsupported fun def {defn}"
 where
@@ -644,7 +694,7 @@ where
     | sexp!{({n} {s})} =>
       let n := smtSymbolToName n.serialize
       let (ct, ut) ← parseSort s
-      modify fun state => { state with level := state.level + 1, bvars := state.bvars.insert n (ct, state.level) }
+      modify fun s => { s with level := s.level + 1, bvars := s.bvars.insert n (ct, s.level) }
       return (n, ct, ut)
     | _ =>
       throw m!"Error: unsupported fun param {p}"
@@ -653,10 +703,17 @@ private def parseAssert : Sexp → ParserM Unit
   | sexp!{(assert {body})} => do
     let (n?, term) := stripNamedAnnotation body
     let (_, p) ← parseTerm term
-    -- Bump the level so that any subsequent command sees the
-    -- `n? : p = true → _` binder we just introduced.
-    modify fun state => { state with level := state.level + 1 }
-    pushBinder (.assert n? p)
+    let ann := mkApp3 (.const ``Eq [1]) (.const ``Bool []) p (.const ``true [])
+    -- Assertions get a fresh fvar in `lctx` but are not name-resolvable
+    -- (they cannot be referenced from later terms). Leave `canonicalType?`
+    -- defaulted to `none` so the symbol is not registered in `fvars`.
+    -- `MetaM` does not expect `.anonymous` user names in a local context (the
+    -- pretty printer, user-name lookups, etc. assume proper names), so an
+    -- unnamed assertion gets a reserved, unique `_a.<i>` name instead. The
+    -- two-component name cannot collide with SMT-LIB symbols, which are
+    -- always single-component (`Name.mkSimple`).
+    let fallback := Name.num (Name.mkSimple "_a") (← get).lctx.decls.size
+    let _ ← pushCDecl (n?.getD fallback) ann
   | s =>
     throw m!"Error: unsupported assert {s}"
 where
@@ -672,7 +729,7 @@ where
 
 /--
 Parse a single SMT-LIB command. Any declaration, definition, or assertion is
-folded into the parser state (including the accumulated wrapper binders);
+folded into the parser state (including the accumulated `LocalContext`);
 `check-sat` and `exit` are surfaced so the driver can react.
 -/
 def parseCommand : Sexp → ParserM Command
@@ -716,11 +773,13 @@ def nextCommand : ParserM (Option Command) := do
   | true => return none
 
 /--
-Build the current goal type by folding the accumulated binders (outermost
-first) around `False`.
+Build the current goal type by abstracting all top-level declarations and
+assertions accumulated in `lctx` around `False`. `usedLetOnly := false`
+preserves unused let-bindings (e.g. `define-fun`s never referenced by an
+assertion) so the resulting goal mirrors the source file's structure.
 -/
 def getGoalType : ParserM Expr := do
-  let bs := (← get).binders
-  return bs.foldr Binder.apply (.const ``False [])
+  let state ← get
+  return state.lctx.mkForall state.lctx.getFVars (.const ``False []) (usedLetOnly := false)
 
 end Parser

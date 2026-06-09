@@ -1,6 +1,6 @@
 import Leanwuzla.Basic
 import Leanwuzla.NoKernel
-import Leanwuzla.ParserLCtx
+import Leanwuzla.Parser
 
 open Lean
 open Solver
