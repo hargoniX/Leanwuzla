@@ -8,9 +8,13 @@ structure Parser.State where
       parameters and term-level `let` expressions. Top-level declarations and
       assertions do not bump this level — they live in `lctx`. -/
   level : Nat := 0
-  /-- Counter used to generate fresh `FVarId`s for top-level declarations and
-      assertions. -/
-  fvarIdx : Nat := 0
+  /-- Name generator used to mint fresh `FVarId`s for top-level declarations
+      and assertions. `MetaM` maintains the invariant that every `FVarId` in
+      scope descends from its name generator, so callers that intend to use
+      the generated `lctx` inside `MetaM` must seed this from `MetaM`'s name
+      generator before parsing and write it back afterwards (see
+      `Driver.runParser`). -/
+  ngen : NameGenerator := {}
   /-- A mapping from SMT-LIB symbol names to (canonical type, de Bruijn level)
       for **bound** variables only — function and sort parameters and
       term-level `let`-bindings. The corresponding de Bruijn index at a use
@@ -31,6 +35,10 @@ structure Parser.State where
       in source order. Folded by `getGoalType` via `LocalContext.mkForall` to
       produce the final goal. -/
   lctx : LocalContext := {}
+  /-- `FVarId`s of top-level `declare-const`/`declare-fun` symbols in
+      declaration order. `(get-model)` prints a `define-fun` for exactly
+      these. -/
+  consts : Array FVarId := #[]
   /-- Remaining input. Initialised by the driver from the SMT-LIB file
       contents; the parser advances it one s-expression at a time. -/
   input : Sigma String.Pos := ⟨"", "".startPos⟩
@@ -54,13 +62,14 @@ private def runParsec (p : Std.Internal.Parsec.String.Parser α) : ParserM α :=
   | .error _ err =>
     throw m!"Error: parse error: {err}"
 
-/-- Generate a fresh `FVarId`, distinct from any previously produced by the
-    parser within the current state. -/
+/-- Generate a fresh `FVarId` from the state's `NameGenerator`. As long as the
+    generator was seeded from `MetaM`'s (and is synced back), the id is
+    globally fresh: it can collide neither with existing `FVarId`s nor with
+    ones `MetaM` mints later. -/
 private def mkFreshFVarId : ParserM FVarId := do
   let state ← get
-  let id : FVarId := ⟨.mkNum `_smtFv state.fvarIdx⟩
-  set { state with fvarIdx := state.fvarIdx + 1 }
-  return id
+  set { state with ngen := state.ngen.next }
+  return ⟨state.ngen.curr⟩
 
 /--
 Push a `cdecl` (forall-style binder) onto `lctx`. If `canonicalType?` is
@@ -650,7 +659,9 @@ private def parseFunDecl : Sexp → ParserM Unit
       (fun (cb, ub) (ct, ut) =>
         (Expr.forallE n cb ct .default, Expr.forallE n ub ut .default))
       (crt, urt)
-    let _ ← pushCDecl n ut (canonicalType? := some ct)
+    let fvarId ← pushCDecl n ut (canonicalType? := some ct)
+    -- Record declared constants in declaration order for `(get-model)`.
+    modify fun s => { s with consts := s.consts.push fvarId }
   | decl =>
     throw m!"Error: unsupported fun decl {decl}"
 
@@ -670,7 +681,11 @@ private def parseFunDef : Sexp → ParserM Unit
     let v := ps.foldr (fun (pn, _, ub) acc => Expr.lam pn ub acc .default) b
     -- Discard the parameter bvars/level introduced for body parsing.
     set savedState
-    let _ ← pushLDecl n ut ct v true
+    -- The decl must be a dependent `let` (`nonDep := false`): a non-dependent
+    -- `ldecl` is semantically a `have`, whose value `MetaM` treats as opaque —
+    -- `bv_decide`'s `zetaDelta` preprocessing would then leave the defined
+    -- symbol as a free atom in the assertions, relaxing the problem.
+    let _ ← pushLDecl n ut ct v false
   | defn =>
     throw m!"Error: unsupported fun def {defn}"
 where
@@ -692,7 +707,13 @@ private def parseAssert : Sexp → ParserM Unit
     -- Assertions get a fresh fvar in `lctx` but are not name-resolvable
     -- (they cannot be referenced from later terms). Leave `canonicalType?`
     -- defaulted to `none` so the symbol is not registered in `fvars`.
-    let _ ← pushCDecl (n?.getD .anonymous) ann
+    -- `MetaM` does not expect `.anonymous` user names in a local context (the
+    -- pretty printer, user-name lookups, etc. assume proper names), so an
+    -- unnamed assertion gets a reserved, unique `_a.<i>` name instead. The
+    -- two-component name cannot collide with SMT-LIB symbols, which are
+    -- always single-component (`Name.mkSimple`).
+    let fallback := Name.num (Name.mkSimple "_a") (← get).lctx.decls.size
+    let _ ← pushCDecl (n?.getD fallback) ann
   | s =>
     throw m!"Error: unsupported assert {s}"
 where

@@ -28,10 +28,14 @@ def runSolver (cnf : CNF Nat) (solver : System.FilePath) (lratPath : System.File
 
     return .ok lratProof
 
-public def decideSmtNoKernel (type : Expr) : Solver.SolverM Solver.Result := do
+/--
+Decide the goal `g` (`False` inside the local context accumulated by the
+parser) without involving the Lean kernel: only the LRAT certificate is
+checked. `consts` are the free variables of the declared constants, used to
+answer a later `(get-model)`.
+-/
+public def decideSmtNoKernel (g : MVarId) (consts : Array FVarId) : Solver.SolverM Solver.Result := do
   let solver ← determineSolver
-  let g := (← Meta.mkFreshExprMVar type).mvarId!
-  let (fvars, g) ← g.introsP
   trace[Meta.Tactic.bv] m!"Working on goal: {g}"
   try
     g.withContext $ IO.FS.withTempFile fun _ lratPath => do
@@ -81,7 +85,7 @@ public def decideSmtNoKernel (type : Expr) : Solver.SolverM Solver.Result := do
             return .error
         | .error assignment =>
           let equations := reconstructCounterExample map assignment aigSize atomsAssignment
-          Solver.reportSat fvars { goal := g', unusedHypotheses, equations }
+          Solver.reportSat consts { goal := g', unusedHypotheses, equations }
       | none =>
         logInfo "unsat"
         return .unsat
@@ -94,7 +98,7 @@ public def decideSmtNoKernel (type : Expr) : Solver.SolverM Solver.Result := do
       -- declared constant is then unconstrained, so the model completed entirely
       -- with default values is a valid one.
       logInfo "sat"
-      Solver.setModel { fvars, counterExample := { goal := g, unusedHypotheses := {}, equations := #[] } }
+      Solver.setModel { fvars := consts, counterExample := { goal := g, unusedHypotheses := {}, equations := #[] } }
       return .sat
     else
       logError m!"Error: {e.toMessageData}"

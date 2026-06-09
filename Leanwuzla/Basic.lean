@@ -104,42 +104,6 @@ public def printModel (fvars : Array FVarId) (equations : Array (Expr × BVExpr.
     else "(\n" ++ String.intercalate "\n" lines.toList ++ "\n)"
   logInfo model
 
-/--
-Count the leading `let` binders (introduced by `define-sort`) followed by the
-`forall` binders (introduced by `declare-fun`/`declare-const`) of `e`. Traversal
-stops at the first `let` following the foralls, which corresponds to the
-`define-fun`/`define-const` bindings of the body. Returns the number of leading
-`let`s and the number of following `forall`s, respectively.
--/
-private partial def getIntrosSize (e : Expr) : Nat × Nat :=
-  goLets 0 e
-where
-  goLets (lets : Nat) : Expr → Nat × Nat
-    | .letE _ _ _ b _ => goLets (lets + 1) b
-    | .mdata _ b      => goLets lets b
-    | e               => (lets, goForalls 0 e)
-  goForalls (foralls : Nat) : Expr → Nat
-    | .forallE _ _ b _ => goForalls (foralls + 1) b
-    | .mdata _ b       => goForalls foralls b
-    | _                => foralls
-
-/--
-Introduce the leading `define-sort` `let` binders together with the
-`declare-fun`/`declare-const` `forall` binders, preserving names. Returns the
-free variables corresponding to the declared symbols, i.e. those coming from the
-`forall` binders only (the introduced sort definitions are excluded).
--/
-public def _root_.Lean.MVarId.introsP (mvarId : MVarId) : MetaM (Array FVarId × MVarId) := do
-  let type ← mvarId.getType
-  let type ← instantiateMVars type
-  let (numLets, numForalls) := getIntrosSize type
-  if numLets + numForalls == 0 then
-    return (#[], mvarId)
-  else
-    let (fvars, mvarId) ← mvarId.introNP (numLets + numForalls)
-    -- Drop the leading sort definitions; keep only the declared symbols.
-    return (fvars.extract numLets fvars.size, mvarId)
-
 namespace Solver
 
 open Lean.Meta.Tactic.BVDecide

@@ -1,6 +1,6 @@
 import Leanwuzla.Basic
 import Leanwuzla.NoKernel
-import Leanwuzla.Parser
+import Leanwuzla.ParserLCtx
 
 open Lean
 open Solver
@@ -14,29 +14,47 @@ The driver lives in its own monad which is rich enough to perform IO (via
 -/
 abbrev DriverM := StateT Parser.State SolverM
 
-/-- Run a pure parser action against the driver's current parser state. -/
+/--
+Run a pure parser action against the driver's current parser state.
+
+The parser mints `FVarId`s for the `LocalContext` it builds, so its name
+generator is seeded from `MetaM`'s before the action runs and synced back
+afterwards. This maintains `MetaM`'s freshness invariant: every `FVarId`
+reachable from the metavariable context is unique, and nothing `MetaM` mints
+later can collide with an id the parser created.
+-/
 def runParser (x : ParserM α) : DriverM α := do
-  match x.run (← get) with
+  let ps := { (← get) with ngen := (← getNGen) }
+  match x.run ps with
   | .error e    => throwError e
-  | .ok (a, ps) => set ps; return a
+  | .ok (a, ps) => set ps; setNGen ps.ngen; return a
 
 end Driver
 
 open Meta in
 open Elab in
-def decideSmt (type : Expr) : SolverM Solver.Result := do
-  let mv ← Meta.mkFreshExprMVar type
-  let (fvars, mv') ← mv.mvarId!.introsP
-  trace[Meta.Tactic.bv] m!"Working on goal: {mv'}"
+/--
+Decide the goal `mv`, which is `False` inside the local context accumulated by
+the parser. If the goal is proven, the proof of `False` is closed over the
+local context (`∀`s for declarations and assertions, `let`s for definitions)
+to obtain a self-contained theorem for the kernel to check. If a
+counterexample is found instead, it is diagnosed and stored for a later
+`(get-model)`; `consts` are the free variables of the declared constants.
+-/
+def decideSmt (mv : MVarId) (consts : Array FVarId) : SolverM Solver.Result := do
+  trace[Meta.Tactic.bv] m!"Working on goal: {mv}"
   try
-    mv'.withContext $ IO.FS.withTempFile fun _ lratFile => do
+    mv.withContext $ IO.FS.withTempFile fun _ lratFile => do
       let cfg ← Solver.getBVDecideConfig
       let ctx ← (Tactic.BVDecide.TacticContext.new lratFile cfg).run' { declName? := `lrat }
-      match ← Tactic.BVDecide.bvDecide' mv' ctx with
+      match ← Tactic.BVDecide.bvDecide' mv ctx with
       | .error counterExample =>
-        Solver.reportSat fvars counterExample
+        Solver.reportSat consts counterExample
       | .ok _ =>
-        let value ← instantiateExprMVars mv
+        let lctx ← getLCtx
+        let fvars := lctx.getFVars
+        let type := lctx.mkForall fvars (.const ``False []) (usedLetOnly := false)
+        let value := lctx.mkLambda fvars (← instantiateMVars (.mvar mv)) (usedLetOnly := false)
         Lean.addDecl (.thmDecl { name := ← Lean.mkAuxDeclName, levelParams := [], type, value })
         logInfo "unsat"
         return .unsat
@@ -49,7 +67,7 @@ def decideSmt (type : Expr) : SolverM Solver.Result := do
       -- declared constant is then unconstrained, so the model completed entirely
       -- with default values is a valid one.
       logInfo "sat"
-      Solver.setModel { fvars, counterExample := { goal := mv', unusedHypotheses := {}, equations := #[] } }
+      Solver.setModel { fvars := consts, counterExample := { goal := mv, unusedHypotheses := {}, equations := #[] } }
       return .sat
     else
       logError m!"Error: {e.toMessageData}"
@@ -79,18 +97,29 @@ def typeCheck (e : Expr) : SolverM Solver.Result := do
 namespace Driver
 
 /--
-Run the appropriate backend on the current accumulated goal and report a
-`Solver.Result`.
+Run the appropriate backend on the goal accumulated in the parser's
+`LocalContext` and report a `Solver.Result`.
+
+The parser's `LocalContext` is installed in `MetaM` directly — the goal is
+just `False` inside it — instead of folding the context into a `∀`/`let`
+telescope and re-introducing the binders on the other side. The context
+contains no type-class instances (only `Bool`/`BitVec` constants, sort
+aliases, definitions, and assertion hypotheses), so the set of local
+instances is empty.
 -/
 def solveGoal : DriverM Solver.Result := do
-  let type ← runParser Parser.getGoalType
   if ← Solver.getParseOnly then
+    let type ← runParser Parser.getGoalType
     logInfo m!"Goal:\n{type}"
     typeCheck type
-  else if ← Solver.getKernelDisabled then
-    decideSmtNoKernel type
   else
-    decideSmt type
+    let ps ← get
+    Meta.withLCtx ps.lctx #[] do
+      let mv ← Meta.mkFreshExprMVar (Expr.const ``False [])
+      if ← Solver.getKernelDisabled then
+        decideSmtNoKernel mv.mvarId! ps.consts
+      else
+        decideSmt mv.mvarId! ps.consts
 
 /--
 Top-level driver loop: read the SMT-LIB file into the parser, then repeatedly

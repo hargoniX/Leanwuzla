@@ -3,7 +3,7 @@ Copyright (c) 2024 Lean FRO, LLC. All rights reserved.
 Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Abdalrhman Mohamed
 -/
-import Leanwuzla.Parser
+import Leanwuzla.ParserLCtx
 import Leanwuzla.Basic
 
 open Lean Meta Elab Command
@@ -82,21 +82,21 @@ info: (
 #guard_msgs in
 #eval runModelAlias
 
-/-! ## `introsP` selects declared (not defined) symbols -/
+/-! ## The parser records declared (not defined) symbols for `(get-model)` -/
 
-/-- The user names of the free variables `introsP` introduces for a query. These
-should be exactly the `declare-const`/`declare-fun` symbols, excluding any
-`define-sort`/`define-const`/`define-fun` symbols. -/
+/-- The user names of the free variables the parser records as declared
+constants. These should be exactly the `declare-const`/`declare-fun` symbols,
+excluding any `define-sort`/`define-const`/`define-fun` symbols. -/
 private def declaredNames (cmds : List Sexp) : CommandElabM Unit := runTermElabM fun _ => do
-  let go : ParserM Expr := do
+  let go : ParserM Unit := do
     for c in cmds do
       discard <| Parser.parseCommand c
-    Parser.getGoalType
-  let e ← ofExcept <| go.run' {}
-  let mv ← mkFreshExprMVar e
-  let (fvars, mv') ← mv.mvarId!.introsP
-  mv'.withContext do
-    logInfo m!"{(← fvars.mapM fun f => return (← f.getDecl).userName).toList}"
+  -- Seed the parser's name generator from `MetaM`'s (and sync it back) so the
+  -- `FVarId`s in the generated context are globally fresh.
+  let (_, ps) ← ofExcept <| go.run { ngen := ← getNGen }
+  setNGen ps.ngen
+  withLCtx ps.lctx #[] do
+    logInfo m!"{(← ps.consts.mapM fun f => return (← f.getDecl).userName).toList}"
 
 private def mixedQuery : List Sexp :=
 sexps!{
