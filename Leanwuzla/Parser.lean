@@ -4,23 +4,103 @@ import Leanwuzla.Sexp
 open Lean
 
 structure Parser.State where
-  /-- Current de Bruijn level. -/
+  /-- Current de Bruijn level for bound variables introduced by function/sort
+      parameters and term-level `let` expressions. Top-level declarations and
+      assertions do not bump this level — they live in `lctx`. -/
   level : Nat := 0
-  /-- A mapping from variable names to their corresponding type and de Bruijn
-      level (not index). So, the variables are indexed from the bottom of the
-      stack rather than from the top (i.e., the order in which the symbols are
-      introduced in the SMT-LIB file). To compute the de Bruijn index, we
-      subtract the variable's level from the current level. -/
+  /-- Name generator used to mint fresh `FVarId`s for top-level declarations
+      and assertions. `MetaM` maintains the invariant that every `FVarId` in
+      scope descends from its name generator, so callers that intend to use
+      the generated `lctx` inside `MetaM` must seed this from `MetaM`'s name
+      generator before parsing and write it back afterwards (see
+      `Driver.runParser`). -/
+  ngen : NameGenerator := {}
+  /-- A mapping from SMT-LIB symbol names to (canonical type, de Bruijn level)
+      for **bound** variables only — function and sort parameters and
+      term-level `let`-bindings. The corresponding de Bruijn index at a use
+      site is `state.level - level - 1`. Free variables are not stored here;
+      they are resolved via `fvars` and `lctx`. -/
   bvars : Std.HashMap Name (Expr × Nat) := {}
+  /-- A mapping from SMT-LIB symbol names introduced by top-level declarations
+      and definitions to (canonical type, `FVarId`). The canonical type is
+      used for type-class resolution; the user-facing type (the one that
+      should appear in the goal) is stored as the corresponding decl's type
+      in `lctx`, along with any value, binder info, etc. -/
+  fvars : Std.HashMap Name (Expr × FVarId) := {}
   /-- A mapping from user-defined types (i.e., aliases) to their corresponding
       canonical types. We need this mapping to provide correct type-class
       instances for user-defined types. -/
   uvars : Std.HashMap Name Expr := {}
-deriving Repr
+  /-- The local context accumulated for top-level declarations and assertions
+      in source order. Folded by `getGoalType` via `LocalContext.mkForall` to
+      produce the final goal. -/
+  lctx : LocalContext := {}
+  /-- `FVarId`s of top-level `declare-const`/`declare-fun` symbols in
+      declaration order. `(get-model)` prints a `define-fun` for exactly
+      these. -/
+  consts : Array FVarId := #[]
+  /-- Remaining input. Initialised by the driver from the SMT-LIB file
+      contents; the parser advances it one s-expression at a time. -/
+  input : Sigma String.Pos := ⟨"", "".startPos⟩
 
 abbrev ParserM := StateT Parser.State (Except MessageData)
 
 namespace Parser
+
+/-- Install `input` as the source from which subsequent commands are parsed. -/
+def setInput (input : String) : ParserM Unit :=
+  modify fun s => { s with input := ⟨input, input.startPos⟩ }
+
+/-- Run a Parsec parser against the stored input position, advancing the
+    position on success and throwing on failure. -/
+private def runParsec (p : Std.Internal.Parsec.String.Parser α) : ParserM α := do
+  let state ← get
+  match p state.input with
+  | .success pos a =>
+    set { state with input := pos }
+    return a
+  | .error _ err =>
+    throw m!"Error: parse error: {err}"
+
+/-- Generate a fresh `FVarId` from the state's `NameGenerator`. As long as the
+    generator was seeded from `MetaM`'s (and is synced back), the id is
+    globally fresh: it can collide neither with existing `FVarId`s nor with
+    ones `MetaM` mints later. -/
+private def mkFreshFVarId : ParserM FVarId := do
+  let state ← get
+  set { state with ngen := state.ngen.next }
+  return ⟨state.ngen.curr⟩
+
+/--
+Push a `cdecl` (forall-style binder) onto `lctx`. If `canonicalType?` is
+`some ct`, the symbol is registered in `fvars` (paired with `ct`) so that
+subsequent references can resolve it and type-class lookups use `ct`; if
+`none` — as for assertions — the symbol is not name-resolvable but its decl
+still contributes to the goal.
+-/
+private def pushCDecl
+    (userName : Name) (userType : Expr) (canonicalType? : Option Expr := none)
+    (bi : BinderInfo := .default) : ParserM FVarId := do
+  let fvarId ← mkFreshFVarId
+  modify fun s => { s with
+    lctx := s.lctx.mkLocalDecl fvarId userName userType bi
+    fvars := match canonicalType? with
+      | some ct => s.fvars.insert userName (ct, fvarId)
+      | none    => s.fvars }
+  return fvarId
+
+/--
+Push an `ldecl` (let-style binder) onto `lctx` and register its name in
+`fvars` with the supplied canonical type.
+-/
+private def pushLDecl
+    (userName : Name) (userType : Expr) (canonicalType : Expr)
+    (value : Expr) (nonDep : Bool) : ParserM FVarId := do
+  let fvarId ← mkFreshFVarId
+  modify fun s => { s with
+    lctx := s.lctx.mkLetDecl fvarId userName userType value nonDep
+    fvars := s.fvars.insert userName (canonicalType, fvarId) }
+  return fvarId
 
 private def mkBool : Expr :=
   .const ``Bool []
@@ -117,25 +197,47 @@ def smtSymbolToName (s : String) : Name :=
   -- differ in a way `String.toName` normalizes away, such as `a.0` and `a.00`.
   Name.mkSimple s
 
-/-- Returns two types: the first is the canonical type and the second is the
-    user-provided one (mainly for pretty-printing). -/
+/-- Parse a numeral atom (e.g. a bitvector width or the index of an indexed
+    operator). Throws instead of panicking on malformed input — in compiled
+    code a panic does not abort, so `toNat!` would silently continue with `0`. -/
+private def parseNumeral (s : Sexp) : ParserM Nat := do
+  let .atom n := s | throw m!"Error: expected a numeral, got {s}"
+  let some v := n.toNat? | throw m!"Error: expected a numeral, got {s}"
+  return v
+
+/-- Returns two types: the first is the canonical type (used for type-class
+    resolution) and the second is the user-provided one (which appears in the
+    goal). They differ when user-defined sort aliases are involved. -/
 def parseSort (s  : Sexp) : ParserM (Expr × Expr) := do
   match s with
   | sexp!{Bool} =>
     return (mkBool, mkBool)
   | sexp!{(_ BitVec {w})} =>
-    let w := w.serialize.toNat!
+    let w ← parseNumeral w
     return (mkBitVec w, mkBitVec w)
   | sexp!{({sc} ⦃as⦄)} =>
     let (bsc, sc) ← parseSort sc
     let as ← as.mapM parseSort
     let (bas, as) := as.unzip
-    return (mkAppN bsc bas.toArray, mkAppN sc as.toArray)
+    -- The canonical head of a parameterized sort alias is a lambda, so the
+    -- application is a beta redex; reduce it so that e.g. `getBitVecWidth`
+    -- sees the underlying sort.
+    return ((mkAppN bsc bas.toArray).headBeta, mkAppN sc as.toArray)
   | .atom n =>
-    let state ← get
     let n := smtSymbolToName n
-    let some (.sort 1, i) := state.bvars[n]? | throw m!"Error: unexpected sort {s}"
-    let ut := .bvar (state.level - i - 1)
+    let state ← get
+    -- A bare sort atom must resolve to something of canonical type `Sort 1`.
+    -- Bound vars get a `.bvar`; free vars (top-level `define-sort` aliases)
+    -- get a `.fvar` so the alias is preserved in the goal.
+    let ut : Expr ←
+      if let some (t, i) := state.bvars[n]? then do
+        unless t == .sort 1 do throw m!"Error: unexpected sort {s}"
+        pure (.bvar (state.level - i - 1))
+      else if let some (t, fvarId) := state.fvars[n]? then do
+        unless t == .sort 1 do throw m!"Error: unexpected sort {s}"
+        pure (.fvar fvarId)
+      else
+        throw m!"Error: unexpected sort {s}"
     let ct := match state.uvars[n]? with
       | some ct => ct
       | none    => ut
@@ -146,7 +248,8 @@ partial def parseTerm (s : Sexp) : ParserM (Expr × Expr) := do
   try
     go s
   catch e =>
-    throw m!"Error: {e}\nfailed to parse term {s}"
+    -- `e` already starts with `Error:`; just extend the term trace.
+    throw m!"{e}\nfailed to parse term {s}"
 where
   go (e : Sexp) : ParserM (Expr × Expr) := do
     if let sexp!{(let (⦃_⦄) {_})} := e then
@@ -167,6 +270,8 @@ where
       let (_, p) ← parseTerm p
       return (mkBool, .app (.const ``not []) p)
     if let sexp!{(=> ⦃ps⦄)} := e then
+      if ps.isEmpty then
+        throw m!"Error: expected at least two arguments for `=>`"
       let ps ← ps.mapM (fun p => return (← parseTerm p).snd)
       let p := ps.dropLast.foldr (mkApp2 (.const ``implies [])) ps.getLast!
       return (mkBool, p)
@@ -176,13 +281,8 @@ where
       return ← leftAssocOpBool (.const ``or []) ps
     if let sexp!{(xor ⦃ps⦄)} := e then
       return ← leftAssocOpBool (.const ``xor []) ps
-    if let sexp!{(= {x} {y})} := e then
-      let (uα, x) ← parseTerm x
-      let (_, y) ← parseTerm y
-      let hα ← if uα == mkBool then pure mkInstBEqBool
-        else if uα.isAppOfArity ``BitVec 1 then pure (mkInstBEqBitVec (← getBitVecWidth uα))
-        else throw m!"Error: unsupported type for equality: {uα}"
-      return (mkBool, mkApp4 (.const ``BEq.beq [0]) uα hα x y)
+    if let sexp!{(= ⦃xs⦄)} := e then
+      return ← chainableEq xs
     if let sexp!{(distinct ⦃xs⦄)} := e then
       return ← pairwiseDistinct xs
     if let sexp!{(ite {c} {t} {e})} := e then
@@ -191,6 +291,8 @@ where
       let (_, e) ← parseTerm e
       return (α, mkApp4 (mkConst ``cond [1]) α c t e)
     if let sexp!{(concat ⦃xs⦄)} := e then
+      if xs.isEmpty then
+        throw m!"Error: expected at least one argument for `concat`"
       let (α, acc) ← parseTerm xs.head!
       let w ← getBitVecWidth α
       let f := fun (w, acc) x => do
@@ -320,35 +422,35 @@ where
       let w ← getBitVecWidth α
       return (mkBool, mkApp3 (.const ``BitVec.sge []) (mkNatLit w) x y)
     if let sexp!{((_ extract {i} {j}) {x})} := e then
-      let i := i.serialize.toNat!
-      let j := j.serialize.toNat!
+      let i ← parseNumeral i
+      let j ← parseNumeral j
       let (α, x) ← parseTerm x
       let w ← getBitVecWidth α
       let start := j
       let len := i - j + 1
       return (mkBitVec (i - j + 1), mkApp4 (.const ``BitVec.extractLsb' []) (mkNatLit w) (mkNatLit start) (mkNatLit len) x)
     if let sexp!{((_ repeat {i}) {x})} := e then
-      let i := i.serialize.toNat!
+      let i ← parseNumeral i
       let (α, x) ← parseTerm x
       let w ← getBitVecWidth α
       return (mkBitVec (w * i), mkApp3 (.const ``BitVec.replicate []) (mkNatLit w) (mkNatLit i) x)
     if let sexp!{((_ zero_extend {i}) {x})} := e then
-      let i := i.serialize.toNat!
+      let i ← parseNumeral i
       let (α, x) ← parseTerm x
       let w ← getBitVecWidth α
       return (mkBitVec (w + i), mkApp3 (.const ``BitVec.setWidth []) (mkNatLit w) (mkNatLit (w + i)) x)
     if let sexp!{((_ sign_extend {i}) {x})} := e then
-      let i := i.serialize.toNat!
+      let i ← parseNumeral i
       let (α, x) ← parseTerm x
       let w ← getBitVecWidth α
       return (mkBitVec (w + i), mkApp3 (.const ``BitVec.signExtend []) (mkNatLit w) (mkNatLit (w + i)) x)
     if let sexp!{((_ rotate_left {i}) {x})} := e then
-      let i := i.serialize.toNat!
+      let i ← parseNumeral i
       let (α, x) ← parseTerm x
       let w ← getBitVecWidth α
       return (α, mkApp3 (.const ``BitVec.rotateLeft []) (mkNatLit w) x (mkNatLit i))
     if let sexp!{((_ rotate_right {i}) {x})} := e then
-      let i := i.serialize.toNat!
+      let i ← parseNumeral i
       let (α, x) ← parseTerm x
       let w ← getBitVecWidth α
       return (α, mkApp3 (.const ``BitVec.rotateRight []) (mkNatLit w) x (mkNatLit i))
@@ -393,9 +495,9 @@ where
       return (mkBool, mkApp3 (.const ``BitVec.sdivOverflow []) (mkNatLit w) x y)
     if let some r ← parseVar? e then
       return r
-    if let some ⟨w, x⟩ := parseBVLiteral? s then
+    if let some ⟨w, x⟩ := parseBVLiteral? e then
       return (mkBitVec w, toExpr x)
-    if let sexp!{({f} ⦃as⦄)} := s then
+    if let sexp!{({f} ⦃as⦄)} := e then
       let (α, f) ← parseTerm f
       let as ← as.mapM (fun a => return (← parseTerm a).snd)
       return (retType α, mkAppN f as.toArray)
@@ -407,65 +509,98 @@ where
     let .atom n := s | return none
     let state ← get
     let n := smtSymbolToName n
-    let some (t, i) := state.bvars[n]? | return none
-    return some (t, .bvar (state.level - i - 1))
+    -- Bound variables (function/sort parameters, term-level `let` bindings)
+    -- live in `bvars` with their canonical type and de Bruijn level.
+    if let some (t, i) := state.bvars[n]? then
+      return some (t, .bvar (state.level - i - 1))
+    -- Free variables (top-level declarations and definitions): `fvars` gives
+    -- us the canonical type for callers (e.g. for picking a `BEq` instance);
+    -- the `FVarId` references the decl in `lctx` whose `userType` will appear
+    -- in the goal.
+    if let some (t, fvarId) := state.fvars[n]? then
+      return some (t, .fvar fvarId)
+    return none
   parseBVLiteral? (s : Sexp) : Option ((w : Nat) × BitVec w) :=
+    -- Malformed literals must yield `none` (falling through to the
+    -- "unsupported term" error) rather than panicking: in compiled code a
+    -- panic does not abort, so `toNat!` would silently continue with `0`.
     match s with
     | sexp!{(_ {.atom v} {.atom w})} =>
-      if v.startsWith "bv" then
-        let v := v.drop 2
-        let w := w.toNat!
-        let v := v.toNat!
+      if v.startsWith "bv" then do
+        let w ← w.toNat?
+        let v ← (v.drop 2).toNat?
         some ⟨w, BitVec.ofNat w v⟩
       else
         none
     | sexp!{{.atom s}} =>
       if s.startsWith "#b" then
-        let w := s.length - 2
         let s := s.drop 2
-        let v := s.foldl (fun v c => v <<< 1 + (if c == '1' then 1 else 0)) 0
-        some ⟨w, BitVec.ofNat w v⟩
+        if s.isEmpty || !s.all (fun c => c == '0' || c == '1') then
+          none
+        else
+          let w := s.length
+          let v := s.foldl (fun v c => v <<< 1 + (if c == '1' then 1 else 0)) 0
+          some ⟨w, BitVec.ofNat w v⟩
       else if s.startsWith "#x" then
         let s := (s.drop 2).copy.toUpper
-        let w := 4 * s.length
-        let f v c :=
-          let d := if c.isDigit then c.toNat - '0'.toNat else c.toNat - 'A'.toNat + 10
-          v <<< 4 + d
-        let v := s.foldl f 0
-        some ⟨w, BitVec.ofNat w v⟩
+        if s.isEmpty || !s.all Char.isHexDigit then
+          none
+        else
+          let w := 4 * s.length
+          let f v c :=
+            let d := if c.isDigit then c.toNat - '0'.toNat else c.toNat - 'A'.toNat + 10
+            v <<< 4 + d
+          let v := s.foldl f 0
+          some ⟨w, BitVec.ofNat w v⟩
       else
         none
     | _ =>
       none
   leftAssocOpBool (op : Expr) (as : List Sexp) : ParserM (Expr × Expr) := do
+    if as.isEmpty then
+      throw m!"Error: expected at least one argument"
     let as ← as.mapM (fun a => return (← parseTerm a).snd)
     return (mkBool, as.tail.foldl (mkApp2 op) as.head!)
   leftAssocOpBitVec (op : Nat → Expr) (as : List Sexp) : ParserM (Expr × Expr) := do
+    if as.isEmpty then
+      throw m!"Error: expected at least one argument"
     let (α, a) ← parseTerm as.head!
     let op := op (← getBitVecWidth α)
     -- Do not reparse a!
     let as ← as.tail.mapM (fun a => return (← parseTerm a).snd)
     return (α, as.foldl (mkApp2 op) a)
+  chainableEq (as : List Sexp) : ParserM (Expr × Expr) := do
+    if as.length < 2 then
+      throw m!"Error: expected at least two arguments for `=`"
+    -- Parse each argument exactly once; `=` is chainable: `(= a b c)`
+    -- abbreviates `(and (= a b) (= b c))`.
+    let (α, x0) ← parseTerm as.head!
+    let xs := (x0 :: (← as.tail.mapM (fun a => return (← parseTerm a).snd))).toArray
+    let hα ← if α == mkBool
+      then pure mkInstBEqBool
+      else if α.isAppOfArity ``BitVec 1 then pure (mkInstBEqBitVec (← getBitVecWidth α))
+      else throw m!"Error: unsupported type for equality: {α}"
+    let mut acc : Expr := mkApp4 (.const ``BEq.beq [0]) α hα xs[0]! xs[1]!
+    for i in [1:xs.size - 1] do
+      acc := mkApp2 (.const ``and []) acc (mkApp4 (.const ``BEq.beq [0]) α hα xs[i]! xs[i + 1]!)
+    return (mkBool, acc)
   pairwiseDistinct (as : List Sexp) : ParserM (Expr × Expr) := do
-    if h : as.length < 2 then
+    if as.length < 2 then
       throw m!"Error: expected at least two arguments for `distinct`"
-    else
-      let (α, as0) ← parseTerm as[0]
-      let (_, as1) ← parseTerm as[1]
-      let hα ← if α == mkBool
-        then pure mkInstBEqBool
-        else if α.isAppOfArity ``BitVec 1 then pure (mkInstBEqBitVec (← getBitVecWidth α))
-        else throw m!"Error: unsupported type for `distinct`: {α}"
-      let mut acc : Expr := mkApp4 (.const ``bne [0]) α hα as0 as1
-      for hi : i in [2:as.length] do
-        let (_, asi) ← parseTerm as[i]
-        acc := mkApp2 (.const ``and []) acc (mkApp4 (.const ``bne [0]) α hα as0 asi)
-      for hi : i in [1:as.length] do
-        for hj : j in [i + 1:as.length] do
-          let (_, asi) ← parseTerm as[i]
-          let (_, asj) ← parseTerm as[j]
-          acc :=  mkApp2 (.const ``and []) acc (mkApp4 (.const ``bne [0]) α hα asi asj)
-      return (mkBool, acc)
+    -- Parse each argument exactly once; `distinct` denotes the conjunction of
+    -- all pairwise disequalities.
+    let (α, x0) ← parseTerm as.head!
+    let xs := (x0 :: (← as.tail.mapM (fun a => return (← parseTerm a).snd))).toArray
+    let hα ← if α == mkBool
+      then pure mkInstBEqBool
+      else if α.isAppOfArity ``BitVec 1 then pure (mkInstBEqBitVec (← getBitVecWidth α))
+      else throw m!"Error: unsupported type for `distinct`: {α}"
+    let mut acc : Expr := mkApp4 (.const ``bne [0]) α hα xs[0]! xs[1]!
+    for i in [0:xs.size] do
+      for j in [i + 1:xs.size] do
+        unless i == 0 && j == 1 do
+          acc := mkApp2 (.const ``and []) acc (mkApp4 (.const ``bne [0]) α hα xs[i]! xs[j]!)
+    return (mkBool, acc)
   parseNestedBindings (bindings : List (List Sexp)) : ParserM (List (Name × Expr × Expr)) := do
     let bindings ← bindings.mapM parseParallelBindings
     return bindings.flatten
@@ -491,168 +626,209 @@ where
     | sexp!{(let (⦃bs⦄) {b})} => getNestedLetBindingsAndBody (bs :: bindings) b
     | b => (bindings.reverse, b)
 
-def withTypeDefs (defs : List Sexp) (k : ParserM Expr) : ParserM Expr := do
-  let state ← get
-  let defs ← defs.mapM parseTypeDef
-  let b ← k
-  set state
-  -- Note: We set `nonDep` to `false` for user-defined types to ensure
-  -- type-checking works. Although this could be inefficient, it should be
-  -- acceptable since user-defined types are rare.
-  return defs.foldr (fun (n, t, v) b => .letE n t v b false) b
+/--
+The subset of SMT-LIB commands the driver reacts to. Commands are named after
+the state-machine categories from the SMT-LIB spec:
+* `setLogic` / `checkSat` / `exit` drive the Start/Assert/Sat/Unsat transitions
+  tracked by `Driver.Mode`.
+* `getUnsat` covers `get-proof` and the `get-unsat-*` family — all of which
+  are only valid in `unsat` mode.
+* Declarations, definitions, and assertions are absorbed by the parser and
+  reported as `declOrAssert` so the driver can track the assertion-stack mode.
+* Everything else (options, info, comments) is reported as `noop`.
+-/
+inductive Command where
+  /-- `(set-logic L)`. Transitions `Start → Assert`. -/
+  | setLogic (logic : String)
+  /-- `(check-sat)`. Transitions `Assert → Sat | Unsat` based
+      on the solver's answer. -/
+  | checkSat
+  /-- `(get-unsat-core)`. Only valid in `unsat` mode. -/
+  | getUnsatCore
+  /-- `(get-model)`. Only valid in `sat` mode. -/
+  | getModel
+  /-- `(exit)`. Terminates the driver loop. -/
+  | exit
+  /-- Any command that modifies the assertion stack (a declaration, definition,
+      or assertion). Only valid after `(set-logic …)`. -/
+  | declOrAssert
+  /-- Any command the driver does not need to act on (`set-info`,
+      `set-option`, …). -/
+  | noop
+
+private def parseTypeDef : Sexp → ParserM Unit
+  | sexp!{(define-sort {n} (⦃ps⦄) {b})} => do
+    let savedState ← get
+    let ps ← ps.mapM parseParam
+    let rt := .sort 1
+    let (cb, ub) ← parseSort b
+    let n := smtSymbolToName n.serialize
+    let t := ps.foldr (fun (pn, pt) acc => Expr.forallE pn pt acc .default) rt
+    let bv := ps.foldr (fun (pn, pt) acc => Expr.lam pn pt acc .default) cb
+    let nv := ps.foldr (fun (pn, pt) acc => Expr.lam pn pt acc .default) ub
+    -- Discard the parameter bvars/level introduced for body parsing.
+    set savedState
+    modify fun s => { s with uvars := s.uvars.insert n bv }
+    -- Non-dependent let unfolding is disabled for user-defined types to keep
+    -- type-class resolution happy.
+    let _ ← pushLDecl n t t nv false
+  | defn =>
+    throw m!"Error: unsupported type def {defn}"
 where
-  parseTypeDef (defn : Sexp) : ParserM (Name × Expr × Expr) := do
-    match defn with
-    | sexp!{(define-sort {n} (⦃ps⦄) {b})} =>
-      let state ← get
-      let ps ← ps.mapM parseParam
-      let rt := .sort 1
-      let (cb, ub) ← parseSort b
-      let n := smtSymbolToName n.serialize
-      let t := ps.foldr (fun (n, t) b => .forallE n t b .default) rt
-      let bv := ps.foldr (fun (n, t) b => .lam n t b .default) cb
-      let nv := ps.foldr (fun (n, t) b => .lam n t b .default) ub
-      let bvars := state.bvars.insert n (t, state.level)
-      let uvars := state.uvars.insert n bv
-      let level := state.level + 1
-      set { level, bvars, uvars : Parser.State }
-      return (n, t, nv)
-    | _ =>
-      throw m!"Error: unsupported type def {defn}"
   parseParam (p : Sexp) : ParserM (Name × Expr) := do
     match p with
     | .atom n =>
       let n := smtSymbolToName n
       let t := .sort 1
-      modify fun state => { level := state.level + 1, bvars := state.bvars.insert n (t, state.level) }
+      modify fun s => { s with level := s.level + 1, bvars := s.bvars.insert n (t, s.level) }
       return (n, t)
     | _ =>
       throw m!"Error: unsupported type param {p}"
 
-def withFunDecls (decls : List Sexp) (k : ParserM Expr) : ParserM Expr := do
-  let state ← get
-  let decls ← decls.mapM parseFunDecl
-  let b ← k
-  set state
-  return decls.foldr (fun (n, t) b => .forallE n t b .default) b
-where
-  parseFunDecl (decl : Sexp) : ParserM (Name × Expr) := do
-    match decl with
-    | sexp!{(declare-fun {n} (⦃ps⦄) {s})} =>
-      let state ← get
-      let ps ← ps.mapM parseParamSort
-      let (crt, urt) ← parseSort s
-      let n := smtSymbolToName n.serialize
-      let (ct, ut) := ps.foldr (fun (ct, ut) (cb, ub) => (.forallE n ct cb .default, .forallE n ut ub .default)) (crt, urt)
-      let bvars := state.bvars.insert n (ct, state.level)
-      let level := state.level + 1
-      set { state with bvars, level }
-      return (n, ut)
-    | _ =>
-      throw m!"Error: unsupported fun decl {decl}"
-  parseParamSort (s : Sexp) : ParserM (Expr × Expr) := do
-    let tp ← parseSort s
-    modify fun state => { state with level := state.level + 1 }
-    return tp
+private def parseFunDecl : Sexp → ParserM Unit
+  | sexp!{(declare-fun {n} (⦃ps⦄) {s})} => do
+    let ps ← ps.mapM parseSort
+    let (crt, urt) ← parseSort s
+    let n := smtSymbolToName n.serialize
+    let (ct, ut) := ps.foldr
+      (fun (cb, ub) (ct, ut) =>
+        (Expr.forallE n cb ct .default, Expr.forallE n ub ut .default))
+      (crt, urt)
+    let fvarId ← pushCDecl n ut (canonicalType? := some ct)
+    -- Record declared constants in declaration order for `(get-model)`.
+    modify fun s => { s with consts := s.consts.push fvarId }
+  | decl =>
+    throw m!"Error: unsupported fun decl {decl}"
 
-def withFunDefs (defs : List Sexp) (k : ParserM Expr) : ParserM Expr := do
-  let state ← get
-  -- it's common for SMT-LIB queries to be "letified" using define-fun to
-  -- minimize their size. We don't recurse on each definition to avoid stack
-  -- overflows.
-  let defs ← defs.mapM parseFunDef
-  let b ← k
-  set state
-  return defs.foldr (fun (n, t, v) b => .letE n t v b true) b
+private def parseFunDef : Sexp → ParserM Unit
+  | sexp!{(define-fun {n} (⦃ps⦄) {s} {b})} => do
+    let savedState ← get
+    let ps ← ps.mapM parseParam
+    let (crt, urt) ← parseSort s
+    let (_, b) ← parseTerm b
+    let n := smtSymbolToName n.serialize
+    let (ct, ut) := ps.foldr
+      (fun (pn, cb, ub) (ct, ut) =>
+        (Expr.forallE pn cb ct .default, Expr.forallE pn ub ut .default))
+      (crt, urt)
+    -- The body was parsed using canonical types in `bvars`; wrap it in
+    -- lambdas whose binder types are user-facing so the goal shows aliases.
+    let v := ps.foldr (fun (pn, _, ub) acc => Expr.lam pn ub acc .default) b
+    -- Discard the parameter bvars/level introduced for body parsing.
+    set savedState
+    -- The decl must be a dependent `let` (`nonDep := false`): a non-dependent
+    -- `ldecl` is semantically a `have`, whose value `MetaM` treats as opaque —
+    -- `bv_decide`'s `zetaDelta` preprocessing would then leave the defined
+    -- symbol as a free atom in the assertions, relaxing the problem.
+    let _ ← pushLDecl n ut ct v false
+  | defn =>
+    throw m!"Error: unsupported fun def {defn}"
 where
-  parseFunDef (defn : Sexp) : ParserM (Name × Expr × Expr) := do
-    match defn with
-    | sexp!{(define-fun {n} (⦃ps⦄) {s} {b})} =>
-      let state ← get
-      let ps ← ps.mapM parseParam
-      let (crt, urt) ← parseSort s
-      let (_, b) ← parseTerm b
-      let n := smtSymbolToName n.serialize
-      let (ct, ut) := ps.foldr (fun (n, ct, ut) (cb, ub) => (.forallE n ct cb .default, .forallE n ut ub .default)) (crt, urt)
-      let v := ps.foldr (fun (n, _, t) b => .lam n t b .default) b
-      let bvars := state.bvars.insert n (ct, state.level)
-      let level := state.level + 1
-      set { state with bvars, level }
-      return (n, ut, v)
-    | _ =>
-      throw m!"Error: unsupported fun def {defn}"
   parseParam (p : Sexp) : ParserM (Name × Expr × Expr) := do
     match p with
     | sexp!{({n} {s})} =>
       let n := smtSymbolToName n.serialize
       let (ct, ut) ← parseSort s
-      modify fun state => { level := state.level + 1, bvars := state.bvars.insert n (ct, state.level) }
+      modify fun s => { s with level := s.level + 1, bvars := s.bvars.insert n (ct, s.level) }
       return (n, ct, ut)
     | _ =>
       throw m!"Error: unsupported fun param {p}"
 
-def parseAssert : Sexp → ParserM Expr
-  | sexp!{(assert {p})} =>
-    return (← parseTerm p).snd
+private def parseAssert : Sexp → ParserM Unit
+  | sexp!{(assert {body})} => do
+    let (n?, term) := stripNamedAnnotation body
+    let (_, p) ← parseTerm term
+    let ann := mkApp3 (.const ``Eq [1]) (.const ``Bool []) p (.const ``true [])
+    -- Assertions get a fresh fvar in `lctx` but are not name-resolvable
+    -- (they cannot be referenced from later terms). Leave `canonicalType?`
+    -- defaulted to `none` so the symbol is not registered in `fvars`.
+    -- `MetaM` does not expect `.anonymous` user names in a local context (the
+    -- pretty printer, user-name lookups, etc. assume proper names), so an
+    -- unnamed assertion gets a reserved, unique `_a.<i>` name instead. The
+    -- two-component name cannot collide with SMT-LIB symbols, which are
+    -- always single-component (`Name.mkSimple`).
+    let fallback := Name.num (Name.mkSimple "_a") (← get).lctx.decls.size
+    let _ ← pushCDecl (n?.getD fallback) ann
   | s =>
     throw m!"Error: unsupported assert {s}"
-
-structure Query where
-  typeDefs : List Sexp := []
-  funDecls : List Sexp := []
-  funDefs : List Sexp := []
-  asserts : List Sexp := []
-  /-- Whether the query contains a `(get-model)` command, in which case a model
-      should be printed when the query is satisfiable. -/
-  getModel : Bool := false
-
-def parseQuery (query : Query) : ParserM Expr := do
-  withTypeDefs query.typeDefs <| withFunDecls query.funDecls <| withFunDefs query.funDefs do
-    let conjs ← query.asserts.mapM parseAssert
-    let p := if h : 0 < conjs.length
-      then conjs.tail.foldl (mkApp2 (.const ``and [])) conjs[0]
-      else .const ``true []
-    return mkApp3 (.const ``Eq [1]) (.const ``Bool []) (.app (.const ``not []) p) (.const ``true [])
-
-def filterCmds (sexps : List Sexp) : Query :=
-  go {} sexps
 where
-  go (query : Query) : List Sexp → Query
-    | sexp!{(define-sort {n} {ps} {b})} :: cmds =>
-      go { query with typeDefs := sexp!{(define-sort {n} {ps} {b})} :: query.typeDefs } cmds
-    | sexp!{(declare-const {n} {s})} :: cmds =>
-      go { query with funDecls := sexp!{(declare-fun {n} () {s})} :: query.funDecls } cmds
-    | sexp!{(declare-fun {n} {ps} {s})} :: cmds =>
-      go { query with funDecls := sexp!{(declare-fun {n} {ps} {s})} :: query.funDecls } cmds
-    | sexp!{(define-const {n} {s} {b})} :: cmds =>
-      go { query with funDefs := sexp!{(define-fun {n} () {s} {b})} :: query.funDefs } cmds
-    | sexp!{(define-fun {n} {ps} {s} {b})} :: cmds =>
-      go { query with funDefs := sexp!{(define-fun {n} {ps} {s} {b})} :: query.funDefs } cmds
-    | sexp!{(assert {p})} :: cmds =>
-      go { query with asserts := sexp!{(assert {p})} :: query.asserts } cmds
-    | sexp!{(get-model)} :: cmds =>
-      go { query with getModel := true } cmds
-    -- TODO: We should parse `(check-sat)` command. We currently return `sat` if
-    -- `(check-sat)` command is missing.
-    | _ :: cmds =>
-      go query cmds
-    | [] =>
-      { typeDefs := query.typeDefs.reverse
-        funDecls := query.funDecls.reverse
-        funDefs := query.funDefs.reverse
-        asserts := query.asserts.reverse
-        getModel := query.getModel }
+  /-- If `body` is `(! t :named f)`, return `(some f, t)`; otherwise return
+      `(none, body)`. Other annotation attributes are ignored. -/
+  stripNamedAnnotation : Sexp → Option Name × Sexp
+    | sexp!{(! {term} ⦃attrs⦄)} => (findLabel attrs, term)
+    | s => (none, s)
+  findLabel : List Sexp → Option Name
+    | sexps!{:named {.atom n} ⦃_⦄} => some (smtSymbolToName n)
+    | sexps!{{_} {_} ⦃rest⦄} => findLabel rest
+    | _ => none
 
-/-- Parse an SMT-LIB2 query, returning the goal expression together with a flag
-    indicating whether a model should be printed (i.e. whether the query
-    contained a `(get-model)` command). -/
-def parseSmt2Query (query : String) : Except MessageData (Expr × Bool) := do
-  match Sexp.Parser.manySexps!.run query with
-  | Except.error e =>
-    .error s!"{e}"
-  | Except.ok cmds =>
-    let query := filterCmds cmds
-    let e ← (parseQuery query).run' {}
-    return (e, query.getModel)
+/--
+Parse a single SMT-LIB command. Any declaration, definition, or assertion is
+folded into the parser state (including the accumulated `LocalContext`);
+`check-sat` and `exit` are surfaced so the driver can react.
+-/
+def parseCommand : Sexp → ParserM Command
+  | sexp!{(define-sort {n} {ps} {b})} => do
+    parseTypeDef sexp!{(define-sort {n} {ps} {b})}
+    return .declOrAssert
+  | sexp!{(declare-const {n} {s})} => do
+    parseFunDecl sexp!{(declare-fun {n} () {s})}
+    return .declOrAssert
+  | sexp!{(declare-fun {n} {ps} {s})} => do
+    parseFunDecl sexp!{(declare-fun {n} {ps} {s})}
+    return .declOrAssert
+  | sexp!{(define-const {n} {s} {b})} => do
+    parseFunDef sexp!{(define-fun {n} () {s} {b})}
+    return .declOrAssert
+  | sexp!{(define-fun {n} {ps} {s} {b})} => do
+    parseFunDef sexp!{(define-fun {n} {ps} {s} {b})}
+    return .declOrAssert
+  | sexp!{(assert {p})} => do
+    parseAssert sexp!{(assert {p})}
+    return .declOrAssert
+  | sexp!{(check-sat)} => return .checkSat
+  | sexp!{(get-unsat-core)} => return .getUnsatCore
+  | sexp!{(get-model)} => return .getModel
+  | sexp!{(set-logic {.atom logic})} => return .setLogic logic
+  | sexp!{(exit)} => return .exit
+  | sexp!{({.atom cmd} ⦃_⦄)} => do
+    -- Commands we do not implement and that cannot be skipped: ignoring them
+    -- would silently change the meaning of the query (`push`/`pop`/`reset`
+    -- alter the assertion stack) or misreport results (the `get-*` queries
+    -- would go unanswered).
+    let unsupported := [
+      "push", "pop", "reset", "reset-assertions", "check-sat-assuming",
+      "get-value", "get-assignment", "get-proof", "get-unsat-assumptions"
+    ]
+    if unsupported.contains cmd then
+      throw m!"Error: unsupported command {cmd}"
+    -- Everything else (`set-info`, `set-option`, `get-info`, `echo`, …) does
+    -- not affect the assertion stack and is ignored.
+    return .noop
+  | _ => return .noop
+
+/--
+Parse the next SMT-LIB command from the input stream, or return `none` if the
+input has been fully consumed. Whitespace and comments between commands are
+skipped. On a parse failure the parser throws.
+-/
+def nextCommand : ParserM (Option Command) := do
+  let isEof ← runParsec (Sexp.Parser.misc *> Std.Internal.Parsec.isEof)
+  match isEof with
+  | false =>
+    let s ← runParsec Sexp.Parser.sexp
+    let c ← parseCommand s
+    return some c
+  | true => return none
+
+/--
+Build the current goal type by abstracting all top-level declarations and
+assertions accumulated in `lctx` around `False`. `usedLetOnly := false`
+preserves unused let-bindings (e.g. `define-fun`s never referenced by an
+assertion) so the resulting goal mirrors the source file's structure.
+-/
+def getGoalType : ParserM Expr := do
+  let state ← get
+  return state.lctx.mkForall state.lctx.getFVars (.const ``False []) (usedLetOnly := false)
 
 end Parser

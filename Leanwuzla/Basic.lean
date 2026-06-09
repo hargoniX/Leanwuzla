@@ -103,65 +103,57 @@ public def printModel (fvars : Array FVarId) (equations : Array (Expr × BVExpr.
     else "(\n" ++ String.intercalate "\n" lines.toList ++ "\n)"
   logInfo model
 
-open Lean.Meta.Tactic.BVDecide in
-/--
-Report the outcome of a satisfiable query from a `bv_decide` counterexample.
+namespace Solver
 
-If the counterexample is genuine, print `sat` (and, when `getModel` is set, the
-model) and return exit code `0`. If it is *spurious* -- i.e. `bv_decide`
-abstracted an unsupported subterm as an opaque variable, or did not use a
-relevant hypothesis, so the assignment may not actually satisfy the problem --
-report it as an error and return exit code `1`, mirroring `bvDecide`.
--/
-public def reportCounterExample (fvars : Array FVarId) (getModel : Bool)
-    (counterExample : CounterExample) : MetaM UInt8 := do
-  let diagnosis ← DiagnosisM.run DiagnosisM.diagnose counterExample
-  if diagnosis.uninterpretedSymbols.isEmpty && diagnosis.unusedRelevantHypotheses.isEmpty then
-    logInfo "sat"
-    if getModel then
-      printModel fvars counterExample.equations
-    return (0 : UInt8)
-  else
-    logError (← addMessageContextFull (← explainCounterExampleQuality counterExample))
-    return (1 : UInt8)
+open Lean.Meta.Tactic.BVDecide
 
 /--
-Count the leading `let` binders (introduced by `define-sort`) followed by the
-`forall` binders (introduced by `declare-fun`/`declare-const`) of `e`. Traversal
-stops at the first `let` following the foralls, which corresponds to the
-`define-fun`/`define-const` bindings of the body. Returns the number of leading
-`let`s and the number of following `forall`s, respectively.
+Result of a single solver invocation. The driver uses this to transition its
+SMT-LIB mode (`Assert → Sat | Unsat`); `error` aborts the driver loop.
 -/
-private partial def getIntrosSize (e : Expr) : Nat × Nat :=
-  goLets 0 e
-where
-  goLets (lets : Nat) : Expr → Nat × Nat
-    | .letE _ _ _ b _ => goLets (lets + 1) b
-    | .mdata _ b      => goLets lets b
-    | e               => (lets, goForalls 0 e)
-  goForalls (foralls : Nat) : Expr → Nat
-    | .forallE _ _ b _ => goForalls (foralls + 1) b
-    | .mdata _ b       => goForalls foralls b
-    | _                => foralls
+public inductive Result where
+  | sat
+  | unsat
+  | error
+deriving DecidableEq, Inhabited, Repr
 
 /--
-Introduce the leading `define-sort` `let` binders together with the
-`declare-fun`/`declare-const` `forall` binders, preserving names. Returns the
-free variables corresponding to the declared symbols, i.e. those coming from the
-`forall` binders only (the introduced sort definitions are excluded).
+SMT-LIB solver mode, per the state machine in the SMT-LIB v2.7 reference.
+Transitions in this driver:
+* `start → assert` on `(set-logic …)`
+* `assert → sat | unsat` on `(check-sat)` (based on `Result`)
+* `sat | unsat` stay put on further queries (e.g. `(get-unsat-core)`)
 -/
-public def _root_.Lean.MVarId.introsP (mvarId : MVarId) : MetaM (Array FVarId × MVarId) := do
-  let type ← mvarId.getType
-  let type ← instantiateMVars type
-  let (numLets, numForalls) := getIntrosSize type
-  if numLets + numForalls == 0 then
-    return (#[], mvarId)
-  else
-    let (fvars, mvarId) ← mvarId.introNP (numLets + numForalls)
-    -- Drop the leading sort definitions; keep only the declared symbols.
-    return (fvars.extract numLets fvars.size, mvarId)
+public inductive Mode where
+  | start
+  | assert
+  | sat
+  | unsat
+deriving DecidableEq, Inhabited, Repr
 
-open Meta.Tactic.BVDecide in
+/--
+Everything needed to answer `(get-model)` later: the (possibly partial)
+counterexample found by `bv_decide` together with the free variables of the
+declared constants (in declaration order), valid in the counterexample goal's
+local context.
+-/
+public structure Model where
+  /-- Free variables of the `declare-const`/`declare-fun` symbols. -/
+  fvars : Array FVarId
+  /-- `bv_decide`'s counterexample. `counterExample.goal` provides the local
+      context in which `fvars` and `counterExample.equations` make sense. -/
+  counterExample : CounterExample
+
+/--
+  `SolverM` monad state.
+-/
+public structure State where
+  mode : Mode := .start
+  /-- Unsatisfiable core, if known. -/
+  unsatCore : Option (Array Name) := none
+  /-- Counterexample model, if known. -/
+  model : Option Model := none
+
 public structure Context where
   acNf : Bool
   parseOnly : Bool
@@ -173,9 +165,7 @@ public structure Context where
   disableKernel : Bool
   solverMode : Elab.Tactic.BVDecide.SolverMode
 
-public abbrev SolverM := ReaderT Context MetaM
-
-namespace SolverM
+public abbrev SolverM := ReaderT Context $ StateRefT State MetaM
 
 public def getParseOnly : SolverM Bool := return (← read).parseOnly
 public def getInput : SolverM String := return (← read).input
@@ -195,9 +185,57 @@ public def getBVDecideConfig : SolverM Elab.Tactic.BVDecide.BVDecideConfig := do
     solverMode := ctx.solverMode
   }
 
+public def getMode : SolverM Mode := return (← get).mode
+
+public def setMode (mode : Mode) : SolverM Unit :=
+  modify fun state => { state with mode := mode }
+
+public def setModel (model : Model) : SolverM Unit :=
+  modify fun state => { state with model := some model }
+
+public def getUnsatCore : SolverM (Array Name) := do
+  let state ← get
+  let .unsat := state.mode | throwError m!"Error: (get-unsat-core) requires unsat mode (current: {repr state.mode})"
+  let .some uc := state.unsatCore | throwError "Error: unsat core not available"
+  return uc
+
+public def getModel : SolverM Model := do
+  let state ← get
+  let .sat := state.mode | throwError m!"Error: (get-model) requires sat mode (current: {repr state.mode})"
+  let .some model := state.model | throwError "Error: model not available"
+  return model
+
+/--
+Report the outcome of a satisfiable query from a `bv_decide` counterexample.
+
+If the counterexample is genuine, print `sat`, store the model in the solver
+state — so a later `(get-model)` can print it — and report `Result.sat`. If it
+is *spurious* — i.e. `bv_decide` abstracted an unsupported subterm as an opaque
+variable, or did not use a relevant hypothesis, so the assignment may not
+actually satisfy the problem — report it as an error, mirroring `bvDecide`.
+
+`fvars` are the free variables of the declared constants (in declaration
+order), used to answer a later `(get-model)`.
+-/
+public def reportSat (fvars : Array FVarId) (counterExample : CounterExample) :
+    SolverM Result := do
+  let diagnosis ← DiagnosisM.run DiagnosisM.diagnose counterExample
+  if diagnosis.uninterpretedSymbols.isEmpty && diagnosis.unusedRelevantHypotheses.isEmpty then
+    logInfo "sat"
+    setModel { fvars, counterExample }
+    return .sat
+  else
+    logError (← addMessageContextFull (← explainCounterExampleQuality counterExample))
+    return .error
+
+namespace SolverM
+
 public def run (x : SolverM α) (ctx : Context) (coreContext : Core.Context) (coreState : Core.State) :
     IO α := do
-  let (res, _, _) ← ReaderT.run x ctx |> (Meta.MetaM.toIO · coreContext coreState)
+  let y : MetaM α := ReaderT.run x ctx |>.run' {}
+  let (res, _, _) ← y |> (Meta.MetaM.toIO · coreContext coreState)
   return res
 
 end SolverM
+
+end Solver

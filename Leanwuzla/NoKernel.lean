@@ -28,20 +28,24 @@ def runSolver (cnf : CNF Nat) (solver : System.FilePath) (lratPath : System.File
 
     return .ok lratProof
 
-public def decideSmtNoKernel (type : Expr) (getModel : Bool) : SolverM UInt8 := do
+/--
+Decide the goal `g` (`False` inside the local context accumulated by the
+parser) without involving the Lean kernel: only the LRAT certificate is
+checked. `consts` are the free variables of the declared constants, used to
+answer a later `(get-model)`.
+-/
+public def decideSmtNoKernel (g : MVarId) (consts : Array FVarId) : Solver.SolverM Solver.Result := do
   let solver ← determineSolver
-  let g := (← Meta.mkFreshExprMVar type).mvarId!
-  let (fvars, g) ← g.introsP
   trace[Meta.Tactic.bv] m!"Working on goal: {g}"
   try
     g.withContext $ IO.FS.withTempFile fun _ lratPath => do
-      let cfg ← SolverM.getBVDecideConfig
+      let cfg ← Solver.getBVDecideConfig
       match ← Normalize.bvNormalize g cfg with
-      | some g =>
+      | some g' =>
         -- Reflect the goal and, at the same time, record the atom assignment so
         -- that we can reconstruct a model if the query turns out to be sat.
         let (bvExpr, atomsAssignment, unusedHypotheses) ← M.run do
-          let reflectionResult ← reflectBV g
+          let reflectionResult ← reflectBV g'
           let flipper := fun (expr, {width, atomNumber, synthetic}) =>
             (atomNumber, (width, expr, synthetic))
           let atomsAssignment := Std.HashMap.ofList ((← getThe State).atoms.toList.map flipper)
@@ -75,16 +79,16 @@ public def decideSmtNoKernel (type : Expr) (getModel : Bool) : SolverM UInt8 := 
               IO.lazyPure (fun _ => LRAT.check cert cnf)
           if certFine then
             logInfo "unsat"
-            return (0 : UInt8)
+            return .unsat
           else
             logInfo "Error: Failed to check LRAT cert"
-            return (1 : UInt8)
+            return .error
         | .error assignment =>
           let equations := reconstructCounterExample map assignment aigSize atomsAssignment
-          reportCounterExample fvars getModel { goal := g, unusedHypotheses, equations }
+          Solver.reportSat consts { goal := g', unusedHypotheses, equations }
       | none =>
         logInfo "unsat"
-        return (0 : UInt8)
+        return .unsat
   catch e =>
     -- TODO: improve handling of sat cases. This is a temporary workaround.
     let message ← e.toMessageData.toString
@@ -94,12 +98,11 @@ public def decideSmtNoKernel (type : Expr) (getModel : Bool) : SolverM UInt8 := 
       -- declared constant is then unconstrained, so the model completed entirely
       -- with default values is a valid one.
       logInfo "sat"
-      if getModel then
-        g.withContext do printModel fvars #[]
-      return (0 : UInt8)
+      Solver.setModel { fvars := consts, counterExample := { goal := g, unusedHypotheses := {}, equations := #[] } }
+      return .sat
     else
       logError m!"Error: {e.toMessageData}"
-      return (1 : UInt8)
+      return .error
 where
   determineSolver : CoreM System.FilePath := do
     let opts ← getOptions
