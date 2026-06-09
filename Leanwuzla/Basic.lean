@@ -6,7 +6,6 @@ public import Lean.Meta.Tactic.BVDecide.Counterexample
 public import Std.Tactic.BVDecide.Bitblast.BVExpr.Basic
 public import Std.Tactic.BVDecide.Syntax
 import all Lean.Meta.Tactic.BVDecide.Counterexample
-import Lean.Meta.ReduceEval
 
 
 open Lean
@@ -119,14 +118,6 @@ public inductive Result where
 deriving DecidableEq, Inhabited, Repr
 
 /--
-Value of an expression in a model. We only support Booleans and bitvectors, so this is a simple sum type.
--/
-public inductive Value where
-  | bool (b : Bool)
-  | bitvec (n : Nat) (v : BitVec n)
-deriving DecidableEq, Inhabited, Repr
-
-/--
 SMT-LIB solver mode, per the state machine in the SMT-LIB v2.7 reference.
 Transitions in this driver:
 * `start → assert` on `(set-logic …)`
@@ -202,9 +193,6 @@ public def setMode (mode : Mode) : SolverM Unit :=
 public def setModel (model : Model) : SolverM Unit :=
   modify fun state => { state with model := some model }
 
-public def setModeUnsat (unsatCore : Array Name) : SolverM Unit := do
-  set { mode := .unsat, unsatCore := .some unsatCore, model := .none : State }
-
 public def getUnsatCore : SolverM (Array Name) := do
   let state ← get
   let .unsat := state.mode | throwError m!"Error: (get-unsat-core) requires unsat mode (current: {repr state.mode})"
@@ -216,21 +204,6 @@ public def getModel : SolverM Model := do
   let .sat := state.mode | throwError m!"Error: (get-model) requires sat mode (current: {repr state.mode})"
   let .some model := state.model | throwError "Error: model not available"
   return model
-
-public def getValue (e : Expr) : SolverM Value := do
-  let model ← getModel
-  let (fvs, vs) := model.counterExample.equations.unzip
-  let ev := e.replaceFVars fvs (vs.map (toExpr ·.bv))
-  let t ← Meta.inferType e
-  match t with
-  | .const ``Bool _ => return .bool (← Meta.reduceEval ev)
-  | .app (.const ``BitVec _) n =>
-    let n ← Meta.reduceEval n
-    return .bitvec n (← Meta.reduceEval ev)
-  | _ => throwError m!"Error: value {e} has unsupported type {t}"
-
-public def getValues (es : List Expr) : SolverM (List Value) := do
-  es.mapM getValue
 
 /--
 Report the outcome of a satisfiable query from a `bv_decide` counterexample.

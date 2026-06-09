@@ -197,6 +197,14 @@ def smtSymbolToName (s : String) : Name :=
   -- differ in a way `String.toName` normalizes away, such as `a.0` and `a.00`.
   Name.mkSimple s
 
+/-- Parse a numeral atom (e.g. a bitvector width or the index of an indexed
+    operator). Throws instead of panicking on malformed input — in compiled
+    code a panic does not abort, so `toNat!` would silently continue with `0`. -/
+private def parseNumeral (s : Sexp) : ParserM Nat := do
+  let .atom n := s | throw m!"Error: expected a numeral, got {s}"
+  let some v := n.toNat? | throw m!"Error: expected a numeral, got {s}"
+  return v
+
 /-- Returns two types: the first is the canonical type (used for type-class
     resolution) and the second is the user-provided one (which appears in the
     goal). They differ when user-defined sort aliases are involved. -/
@@ -205,13 +213,16 @@ def parseSort (s  : Sexp) : ParserM (Expr × Expr) := do
   | sexp!{Bool} =>
     return (mkBool, mkBool)
   | sexp!{(_ BitVec {w})} =>
-    let w := w.serialize.toNat!
+    let w ← parseNumeral w
     return (mkBitVec w, mkBitVec w)
   | sexp!{({sc} ⦃as⦄)} =>
     let (bsc, sc) ← parseSort sc
     let as ← as.mapM parseSort
     let (bas, as) := as.unzip
-    return (mkAppN bsc bas.toArray, mkAppN sc as.toArray)
+    -- The canonical head of a parameterized sort alias is a lambda, so the
+    -- application is a beta redex; reduce it so that e.g. `getBitVecWidth`
+    -- sees the underlying sort.
+    return ((mkAppN bsc bas.toArray).headBeta, mkAppN sc as.toArray)
   | .atom n =>
     let n := smtSymbolToName n
     let state ← get
@@ -237,7 +248,8 @@ partial def parseTerm (s : Sexp) : ParserM (Expr × Expr) := do
   try
     go s
   catch e =>
-    throw m!"Error: {e}\nfailed to parse term {s}"
+    -- `e` already starts with `Error:`; just extend the term trace.
+    throw m!"{e}\nfailed to parse term {s}"
 where
   go (e : Sexp) : ParserM (Expr × Expr) := do
     if let sexp!{(let (⦃_⦄) {_})} := e then
@@ -258,6 +270,8 @@ where
       let (_, p) ← parseTerm p
       return (mkBool, .app (.const ``not []) p)
     if let sexp!{(=> ⦃ps⦄)} := e then
+      if ps.isEmpty then
+        throw m!"Error: expected at least two arguments for `=>`"
       let ps ← ps.mapM (fun p => return (← parseTerm p).snd)
       let p := ps.dropLast.foldr (mkApp2 (.const ``implies [])) ps.getLast!
       return (mkBool, p)
@@ -267,13 +281,8 @@ where
       return ← leftAssocOpBool (.const ``or []) ps
     if let sexp!{(xor ⦃ps⦄)} := e then
       return ← leftAssocOpBool (.const ``xor []) ps
-    if let sexp!{(= {x} {y})} := e then
-      let (uα, x) ← parseTerm x
-      let (_, y) ← parseTerm y
-      let hα ← if uα == mkBool then pure mkInstBEqBool
-        else if uα.isAppOfArity ``BitVec 1 then pure (mkInstBEqBitVec (← getBitVecWidth uα))
-        else throw m!"Error: unsupported type for equality: {uα}"
-      return (mkBool, mkApp4 (.const ``BEq.beq [0]) uα hα x y)
+    if let sexp!{(= ⦃xs⦄)} := e then
+      return ← chainableEq xs
     if let sexp!{(distinct ⦃xs⦄)} := e then
       return ← pairwiseDistinct xs
     if let sexp!{(ite {c} {t} {e})} := e then
@@ -282,6 +291,8 @@ where
       let (_, e) ← parseTerm e
       return (α, mkApp4 (mkConst ``cond [1]) α c t e)
     if let sexp!{(concat ⦃xs⦄)} := e then
+      if xs.isEmpty then
+        throw m!"Error: expected at least one argument for `concat`"
       let (α, acc) ← parseTerm xs.head!
       let w ← getBitVecWidth α
       let f := fun (w, acc) x => do
@@ -411,35 +422,35 @@ where
       let w ← getBitVecWidth α
       return (mkBool, mkApp3 (.const ``BitVec.sge []) (mkNatLit w) x y)
     if let sexp!{((_ extract {i} {j}) {x})} := e then
-      let i := i.serialize.toNat!
-      let j := j.serialize.toNat!
+      let i ← parseNumeral i
+      let j ← parseNumeral j
       let (α, x) ← parseTerm x
       let w ← getBitVecWidth α
       let start := j
       let len := i - j + 1
       return (mkBitVec (i - j + 1), mkApp4 (.const ``BitVec.extractLsb' []) (mkNatLit w) (mkNatLit start) (mkNatLit len) x)
     if let sexp!{((_ repeat {i}) {x})} := e then
-      let i := i.serialize.toNat!
+      let i ← parseNumeral i
       let (α, x) ← parseTerm x
       let w ← getBitVecWidth α
       return (mkBitVec (w * i), mkApp3 (.const ``BitVec.replicate []) (mkNatLit w) (mkNatLit i) x)
     if let sexp!{((_ zero_extend {i}) {x})} := e then
-      let i := i.serialize.toNat!
+      let i ← parseNumeral i
       let (α, x) ← parseTerm x
       let w ← getBitVecWidth α
       return (mkBitVec (w + i), mkApp3 (.const ``BitVec.setWidth []) (mkNatLit w) (mkNatLit (w + i)) x)
     if let sexp!{((_ sign_extend {i}) {x})} := e then
-      let i := i.serialize.toNat!
+      let i ← parseNumeral i
       let (α, x) ← parseTerm x
       let w ← getBitVecWidth α
       return (mkBitVec (w + i), mkApp3 (.const ``BitVec.signExtend []) (mkNatLit w) (mkNatLit (w + i)) x)
     if let sexp!{((_ rotate_left {i}) {x})} := e then
-      let i := i.serialize.toNat!
+      let i ← parseNumeral i
       let (α, x) ← parseTerm x
       let w ← getBitVecWidth α
       return (α, mkApp3 (.const ``BitVec.rotateLeft []) (mkNatLit w) x (mkNatLit i))
     if let sexp!{((_ rotate_right {i}) {x})} := e then
-      let i := i.serialize.toNat!
+      let i ← parseNumeral i
       let (α, x) ← parseTerm x
       let w ← getBitVecWidth α
       return (α, mkApp3 (.const ``BitVec.rotateRight []) (mkNatLit w) x (mkNatLit i))
@@ -484,9 +495,9 @@ where
       return (mkBool, mkApp3 (.const ``BitVec.sdivOverflow []) (mkNatLit w) x y)
     if let some r ← parseVar? e then
       return r
-    if let some ⟨w, x⟩ := parseBVLiteral? s then
+    if let some ⟨w, x⟩ := parseBVLiteral? e then
       return (mkBitVec w, toExpr x)
-    if let sexp!{({f} ⦃as⦄)} := s then
+    if let sexp!{({f} ⦃as⦄)} := e then
       let (α, f) ← parseTerm f
       let as ← as.mapM (fun a => return (← parseTerm a).snd)
       return (retType α, mkAppN f as.toArray)
@@ -510,62 +521,86 @@ where
       return some (t, .fvar fvarId)
     return none
   parseBVLiteral? (s : Sexp) : Option ((w : Nat) × BitVec w) :=
+    -- Malformed literals must yield `none` (falling through to the
+    -- "unsupported term" error) rather than panicking: in compiled code a
+    -- panic does not abort, so `toNat!` would silently continue with `0`.
     match s with
     | sexp!{(_ {.atom v} {.atom w})} =>
-      if v.startsWith "bv" then
-        let v := v.drop 2
-        let w := w.toNat!
-        let v := v.toNat!
+      if v.startsWith "bv" then do
+        let w ← w.toNat?
+        let v ← (v.drop 2).toNat?
         some ⟨w, BitVec.ofNat w v⟩
       else
         none
     | sexp!{{.atom s}} =>
       if s.startsWith "#b" then
-        let w := s.length - 2
         let s := s.drop 2
-        let v := s.foldl (fun v c => v <<< 1 + (if c == '1' then 1 else 0)) 0
-        some ⟨w, BitVec.ofNat w v⟩
+        if s.isEmpty || !s.all (fun c => c == '0' || c == '1') then
+          none
+        else
+          let w := s.length
+          let v := s.foldl (fun v c => v <<< 1 + (if c == '1' then 1 else 0)) 0
+          some ⟨w, BitVec.ofNat w v⟩
       else if s.startsWith "#x" then
         let s := (s.drop 2).copy.toUpper
-        let w := 4 * s.length
-        let f v c :=
-          let d := if c.isDigit then c.toNat - '0'.toNat else c.toNat - 'A'.toNat + 10
-          v <<< 4 + d
-        let v := s.foldl f 0
-        some ⟨w, BitVec.ofNat w v⟩
+        if s.isEmpty || !s.all Char.isHexDigit then
+          none
+        else
+          let w := 4 * s.length
+          let f v c :=
+            let d := if c.isDigit then c.toNat - '0'.toNat else c.toNat - 'A'.toNat + 10
+            v <<< 4 + d
+          let v := s.foldl f 0
+          some ⟨w, BitVec.ofNat w v⟩
       else
         none
     | _ =>
       none
   leftAssocOpBool (op : Expr) (as : List Sexp) : ParserM (Expr × Expr) := do
+    if as.isEmpty then
+      throw m!"Error: expected at least one argument"
     let as ← as.mapM (fun a => return (← parseTerm a).snd)
     return (mkBool, as.tail.foldl (mkApp2 op) as.head!)
   leftAssocOpBitVec (op : Nat → Expr) (as : List Sexp) : ParserM (Expr × Expr) := do
+    if as.isEmpty then
+      throw m!"Error: expected at least one argument"
     let (α, a) ← parseTerm as.head!
     let op := op (← getBitVecWidth α)
     -- Do not reparse a!
     let as ← as.tail.mapM (fun a => return (← parseTerm a).snd)
     return (α, as.foldl (mkApp2 op) a)
+  chainableEq (as : List Sexp) : ParserM (Expr × Expr) := do
+    if as.length < 2 then
+      throw m!"Error: expected at least two arguments for `=`"
+    -- Parse each argument exactly once; `=` is chainable: `(= a b c)`
+    -- abbreviates `(and (= a b) (= b c))`.
+    let (α, x0) ← parseTerm as.head!
+    let xs := (x0 :: (← as.tail.mapM (fun a => return (← parseTerm a).snd))).toArray
+    let hα ← if α == mkBool
+      then pure mkInstBEqBool
+      else if α.isAppOfArity ``BitVec 1 then pure (mkInstBEqBitVec (← getBitVecWidth α))
+      else throw m!"Error: unsupported type for equality: {α}"
+    let mut acc : Expr := mkApp4 (.const ``BEq.beq [0]) α hα xs[0]! xs[1]!
+    for i in [1:xs.size - 1] do
+      acc := mkApp2 (.const ``and []) acc (mkApp4 (.const ``BEq.beq [0]) α hα xs[i]! xs[i + 1]!)
+    return (mkBool, acc)
   pairwiseDistinct (as : List Sexp) : ParserM (Expr × Expr) := do
-    if h : as.length < 2 then
+    if as.length < 2 then
       throw m!"Error: expected at least two arguments for `distinct`"
-    else
-      let (α, as0) ← parseTerm as[0]
-      let (_, as1) ← parseTerm as[1]
-      let hα ← if α == mkBool
-        then pure mkInstBEqBool
-        else if α.isAppOfArity ``BitVec 1 then pure (mkInstBEqBitVec (← getBitVecWidth α))
-        else throw m!"Error: unsupported type for `distinct`: {α}"
-      let mut acc : Expr := mkApp4 (.const ``bne [0]) α hα as0 as1
-      for hi : i in [2:as.length] do
-        let (_, asi) ← parseTerm as[i]
-        acc := mkApp2 (.const ``and []) acc (mkApp4 (.const ``bne [0]) α hα as0 asi)
-      for hi : i in [1:as.length] do
-        for hj : j in [i + 1:as.length] do
-          let (_, asi) ← parseTerm as[i]
-          let (_, asj) ← parseTerm as[j]
-          acc :=  mkApp2 (.const ``and []) acc (mkApp4 (.const ``bne [0]) α hα asi asj)
-      return (mkBool, acc)
+    -- Parse each argument exactly once; `distinct` denotes the conjunction of
+    -- all pairwise disequalities.
+    let (α, x0) ← parseTerm as.head!
+    let xs := (x0 :: (← as.tail.mapM (fun a => return (← parseTerm a).snd))).toArray
+    let hα ← if α == mkBool
+      then pure mkInstBEqBool
+      else if α.isAppOfArity ``BitVec 1 then pure (mkInstBEqBitVec (← getBitVecWidth α))
+      else throw m!"Error: unsupported type for `distinct`: {α}"
+    let mut acc : Expr := mkApp4 (.const ``bne [0]) α hα xs[0]! xs[1]!
+    for i in [0:xs.size] do
+      for j in [i + 1:xs.size] do
+        unless i == 0 && j == 1 do
+          acc := mkApp2 (.const ``and []) acc (mkApp4 (.const ``bne [0]) α hα xs[i]! xs[j]!)
+    return (mkBool, acc)
   parseNestedBindings (bindings : List (List Sexp)) : ParserM (List (Name × Expr × Expr)) := do
     let bindings ← bindings.mapM parseParallelBindings
     return bindings.flatten
@@ -756,6 +791,20 @@ def parseCommand : Sexp → ParserM Command
   | sexp!{(get-model)} => return .getModel
   | sexp!{(set-logic {.atom logic})} => return .setLogic logic
   | sexp!{(exit)} => return .exit
+  | sexp!{({.atom cmd} ⦃_⦄)} => do
+    -- Commands we do not implement and that cannot be skipped: ignoring them
+    -- would silently change the meaning of the query (`push`/`pop`/`reset`
+    -- alter the assertion stack) or misreport results (the `get-*` queries
+    -- would go unanswered).
+    let unsupported := [
+      "push", "pop", "reset", "reset-assertions", "check-sat-assuming",
+      "get-value", "get-assignment", "get-proof", "get-unsat-assumptions"
+    ]
+    if unsupported.contains cmd then
+      throw m!"Error: unsupported command {cmd}"
+    -- Everything else (`set-info`, `set-option`, `get-info`, `echo`, …) does
+    -- not affect the assertion stack and is ignored.
+    return .noop
   | _ => return .noop
 
 /--
