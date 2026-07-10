@@ -2,6 +2,7 @@ module
 
 public import Leanwuzla.Basic
 import all Lean.Meta.Tactic.BVDecide
+import Lean.Meta.Sym.Util
 
 
 open Lean Std.Sat Std.Tactic.BVDecide
@@ -32,59 +33,61 @@ public def decideSmtNoKernel (type : Expr) (getModel : Bool) : SolverM UInt8 := 
   let solver ← determineSolver
   let g := (← Meta.mkFreshExprMVar type).mvarId!
   let (fvars, g) ← g.introsP
+  let g ← Meta.Sym.preprocessMVar g
   trace[Meta.Tactic.bv] m!"Working on goal: {g}"
+  let cfg ← SolverM.getBVDecideConfig
   try
+    Normalize.PreProcessM.run' cfg g do
     g.withContext $ IO.FS.withTempFile fun _ lratPath => do
-      let cfg ← SolverM.getBVDecideConfig
-      match ← Normalize.bvNormalize g cfg with
-      | some g =>
-        -- Reflect the goal and, at the same time, record the atom assignment so
-        -- that we can reconstruct a model if the query turns out to be sat.
-        let (bvExpr, atomsAssignment, unusedHypotheses) ← M.run do
-          let reflectionResult ← reflectBV g
-          let flipper := fun (expr, {width, atomNumber, synthetic}) =>
-            (atomNumber, (width, expr, synthetic))
-          let atomsAssignment := Std.HashMap.ofList ((← getThe State).atoms.toList.map flipper)
-          return (reflectionResult.bvExpr, atomsAssignment, reflectionResult.unusedHypotheses)
-
-        let entry ←
-          withTraceNode `bv (fun _ => return "Bitblasting BVLogicalExpr to AIG") do
-            -- lazyPure to prevent compiler lifting
-            IO.lazyPure (fun _ => bvExpr.bitblast)
-        let aigSize := entry.aig.decls.size
-        trace[Meta.Tactic.bv] s!"AIG has {aigSize} nodes."
-
-        let (cnf, map) ←
-          withTraceNode `sat (fun _ => return "Converting AIG to CNF") do
-            -- lazyPure to prevent compiler lifting
-            IO.lazyPure (fun _ =>
-              let (entry, map) := entry.relabelNat'
-              let cnf := Std.Sat.AIG.toCNF entry
-              (cnf, map)
-            )
-
-        let res ←
-          withTraceNode `sat (fun _ => return "Obtaining external proof certificate") do
-            runSolver cnf solver lratPath cfg.trimProofs cfg.timeout cfg.binaryProofs cfg.solverMode
-
-        match res with
-        | .ok cert =>
-          let certFine ←
-            withTraceNode `sat (fun _ => return "Verifying LRAT certificate") do
-              -- lazyPure to prevent compiler lifting
-              IO.lazyPure (fun _ => LRAT.check cert cnf)
-          if certFine then
-            logInfo "unsat"
-            return (0 : UInt8)
-          else
-            logInfo "Error: Failed to check LRAT cert"
-            return (1 : UInt8)
-        | .error assignment =>
-          let equations := reconstructCounterExample map assignment aigSize atomsAssignment
-          reportCounterExample fvars getModel { goal := g, unusedHypotheses, equations }
-      | none =>
+      if ← Normalize.bvNormalize cfg then
         logInfo "unsat"
         return (0 : UInt8)
+      let g ← Normalize.PreProcessM.getGoal
+      let hypotheses ← Normalize.PreProcessM.getHyps
+      -- Reflect the goal and, at the same time, record the atom assignment so
+      -- that we can reconstruct a model if the query turns out to be sat.
+      let (bvExpr, atomsAssignment, unusedHypotheses) ← M.run (hypotheses := hypotheses) do
+        let reflectionResult ← reflectBV g
+        let flipper := fun (expr, {width, atomNumber, synthetic}) =>
+          (atomNumber, (width, expr.expr, synthetic))
+        let atomsAssignment := Std.HashMap.ofList ((← getThe State).atoms.toList.map flipper)
+        return (reflectionResult.bvExpr, atomsAssignment, reflectionResult.unusedHypotheses)
+
+      let entry ←
+        withTraceNode `bv (fun _ => return "Bitblasting BVLogicalExpr to AIG") do
+          -- lazyPure to prevent compiler lifting
+          IO.lazyPure (fun _ => bvExpr.bitblast)
+      let aigSize := entry.aig.decls.size
+      trace[Meta.Tactic.bv] s!"AIG has {aigSize} nodes."
+
+      let (cnf, map) ←
+        withTraceNode `sat (fun _ => return "Converting AIG to CNF") do
+          -- lazyPure to prevent compiler lifting
+          IO.lazyPure (fun _ =>
+            let (entry, map) := entry.relabelNat'
+            let cnf := Std.Sat.AIG.toCNF entry
+            (cnf, map)
+          )
+
+      let res ←
+        withTraceNode `sat (fun _ => return "Obtaining external proof certificate") do
+          runSolver cnf solver lratPath cfg.trimProofs cfg.timeout cfg.binaryProofs cfg.solverMode
+
+      match res with
+      | .ok cert =>
+        let certFine ←
+          withTraceNode `sat (fun _ => return "Verifying LRAT certificate") do
+            -- lazyPure to prevent compiler lifting
+            IO.lazyPure (fun _ => LRAT.check cert cnf)
+        if certFine then
+          logInfo "unsat"
+          return (0 : UInt8)
+        else
+          logInfo "Error: Failed to check LRAT cert"
+          return (1 : UInt8)
+      | .error assignment =>
+        let equations := reconstructCounterExample map assignment aigSize atomsAssignment
+        reportCounterExample fvars getModel { goal := g, unusedHypotheses, equations }
   catch e =>
     -- TODO: improve handling of sat cases. This is a temporary workaround.
     let message ← e.toMessageData.toString

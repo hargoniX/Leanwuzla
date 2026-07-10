@@ -173,7 +173,7 @@ public structure Context where
   disableKernel : Bool
   solverMode : Elab.Tactic.BVDecide.SolverMode
 
-public abbrev SolverM := ReaderT Context MetaM
+public abbrev SolverM := ReaderT Context Meta.Sym.SymM
 
 namespace SolverM
 
@@ -197,7 +197,7 @@ public def getBVDecideConfig : SolverM Elab.Tactic.BVDecide.BVDecideConfig := do
 
 public def run (x : SolverM α) (ctx : Context) (coreContext : Core.Context) (coreState : Core.State) :
     IO α := do
-  let (res, _, _) ← ReaderT.run x ctx |> (Meta.MetaM.toIO · coreContext coreState)
+  let (res, _, _) ← ReaderT.run x ctx |> Meta.Sym.SymM.run |> (Meta.MetaM.toIO · coreContext coreState)
   return res
 
 end SolverM

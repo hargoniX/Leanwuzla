@@ -111,7 +111,7 @@ section Cli
 
 open Cli
 
-open Elab.Tactic.BVDecide.Frontend
+open Meta.Tactic.BVDecide
 
 deriving instance Inhabited for Elab.Tactic.BVDecide.SolverMode
 
@@ -137,8 +137,9 @@ unsafe def runLeanwuzlaCmd (p : Parsed) : IO UInt32 := do
   let env ← importModules #[`Std.Tactic.BVDecide, `Leanwuzla.Auxiliary] {} 0 (loadExts := true)
   let coreContext := { fileName := "leanwuzla", fileMap := default, options }
   let coreState := { env }
-  let code ← SolverM.run parseAndDecideSmt2File context coreContext coreState
-  IO.Process.exit code
+  SolverM.run (ctx := context) (coreContext := coreContext) (coreState := coreState) do
+    let code ← parseAndDecideSmt2File
+    IO.Process.exit code
 where
   argsToOpts (p : Parsed) : Options := Id.run do
     let mut opts := Options.empty
@@ -173,7 +174,7 @@ where
 
     return opts
 
-  argsToContext (p : Parsed) : Context :=
+  argsToContext (p : Parsed) : _root_.Context :=
     {
       acNf := p.hasFlag "acnf"
       parseOnly := p.hasFlag "parseOnly"
