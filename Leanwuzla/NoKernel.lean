@@ -2,7 +2,6 @@ module
 
 public import Leanwuzla.Basic
 import all Lean.Meta.Tactic.BVDecide
-import Lean.Meta.Sym.Util
 
 
 open Lean Std.Sat Std.Tactic.BVDecide
@@ -33,16 +32,15 @@ public def decideSmtNoKernel (type : Expr) (getModel : Bool) : SolverM UInt8 := 
   let solver ← determineSolver
   let g := (← Meta.mkFreshExprMVar type).mvarId!
   let (fvars, g) ← g.introsP
-  let g ← Meta.Sym.preprocessMVar g
   trace[Meta.Tactic.bv] m!"Working on goal: {g}"
   let cfg ← SolverM.getBVDecideConfig
   try
-    Normalize.PreProcessM.run' cfg g do
+    SolverM.runGrind <| Normalize.PreProcessM.run' (.new (.solve (some #[])) cfg) (.mvarIdTarget g) do
     g.withContext $ IO.FS.withTempFile fun _ lratPath => do
-      if ← Normalize.bvNormalize cfg then
+      if ← Normalize.bvNormalize then
         logInfo "unsat"
         return (0 : UInt8)
-      let g ← Normalize.PreProcessM.getGoal
+      let g ← Normalize.PreProcessM.getTargetMVarId
       let hypotheses ← Normalize.PreProcessM.getHyps
       -- Reflect the goal and, at the same time, record the atom assignment so
       -- that we can reconstruct a model if the query turns out to be sat.
