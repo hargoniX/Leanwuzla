@@ -3,6 +3,7 @@ module
 public import Lean.Expr
 public import Lean.Meta.Basic
 public import Lean.Meta.Tactic.BVDecide.Counterexample
+public import Lean.Meta.Tactic.Grind.Main
 public import Std.Tactic.BVDecide.Bitblast.BVExpr.Basic
 public import Std.Tactic.BVDecide.Syntax
 import all Lean.Meta.Tactic.BVDecide.Counterexample
@@ -173,13 +174,21 @@ public structure Context where
   disableKernel : Bool
   solverMode : Elab.Tactic.BVDecide.SolverMode
 
-public abbrev SolverM := ReaderT Context Meta.Sym.SymM
+public abbrev SolverM := ReaderT Context MetaM
 
 namespace SolverM
 
 public def getParseOnly : SolverM Bool := return (← read).parseOnly
 public def getInput : SolverM String := return (← read).input
 public def getKernelDisabled : SolverM Bool := return (← read).disableKernel
+
+/--
+Run a computation in `GrindM`, the ambient monad of the `bv_decide` API. We only ever hand
+`.mvarIdTarget` targets to that API, so the `grind` machinery is unused and default parameters
+suffice.
+-/
+public def runGrind (x : Meta.Grind.GrindM α) : SolverM α := do
+  Meta.Grind.GrindM.run (params := ← Meta.Grind.mkDefaultParams {}) x
 
 public def getBVDecideConfig : SolverM Elab.Tactic.BVDecide.BVDecideConfig := do
   let ctx ← read
@@ -197,7 +206,7 @@ public def getBVDecideConfig : SolverM Elab.Tactic.BVDecide.BVDecideConfig := do
 
 public def run (x : SolverM α) (ctx : Context) (coreContext : Core.Context) (coreState : Core.State) :
     IO α := do
-  let (res, _, _) ← ReaderT.run x ctx |> Meta.Sym.SymM.run |> (Meta.MetaM.toIO · coreContext coreState)
+  let (res, _, _) ← ReaderT.run x ctx |> (Meta.MetaM.toIO · coreContext coreState)
   return res
 
 end SolverM

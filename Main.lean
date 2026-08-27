@@ -21,7 +21,7 @@ def decideSmt (type : Expr) (getModel : Bool) : SolverM UInt8 := do
     mv'.withContext $ IO.FS.withTempFile fun _ lratFile => do
       let cfg ← SolverM.getBVDecideConfig
       let ctx ← (Tactic.BVDecide.TacticContext.new lratFile cfg).run' { declName? := `lrat }
-      match ← Tactic.BVDecide.bvDecide' mv' ctx with
+      match ← SolverM.runGrind (Tactic.BVDecide.bvDecide' (.mvarIdTarget mv') ctx) with
       | .error counterExample =>
         reportCounterExample fvars getModel counterExample
       | .ok _ =>

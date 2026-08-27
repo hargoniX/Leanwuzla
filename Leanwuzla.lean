@@ -222,14 +222,13 @@ def bitwuzla (g : MVarId) (reflectionResult : ReflectionResult) (atomsAssignment
 
 def bvBitwuzla (g : MVarId) (solverPath : System.FilePath) (cfg : BVDecideConfig) :
     MetaM (Except CounterExample Unit) := do
-  Sym.SymM.run do
-    let g ← Sym.preprocessMVar g
-    Normalize.PreProcessM.run' cfg g do
+  Grind.GrindM.run (params := ← Grind.mkDefaultParams {}) do
+    Normalize.PreProcessM.run' (.new (.solve none) cfg) (.mvarIdTarget g) do
       if ← Normalize.bvNormalize then return .ok ()
       let unsatProver : UnsatProver Unit := fun g reflectionResult atomsAssignment => do
         withTraceNode `bv (fun _ => return "Preparing LRAT reflection term") do
           bitwuzla g reflectionResult atomsAssignment solverPath cfg
-      let goal ← Normalize.PreProcessM.getGoal
+      let goal ← Normalize.PreProcessM.getTargetMVarId
       M.run (hypotheses := ← Normalize.PreProcessM.getHyps) do
         match ← closeWithBVReflection goal unsatProver with
         | .ok .. => return .ok ()
@@ -399,7 +398,8 @@ where
 def evalLeanSat (g : MVarId) (cfg : TacticContext) : MetaM LeansatPerf := do
   g.withContext do
     let t1 ← IO.monoNanosNow
-    let result ← bvDecide' g cfg
+    let result ← Grind.GrindM.run (params := ← Grind.mkDefaultParams {}) <|
+      bvDecide' (.mvarIdTarget g) cfg
     let t2 ← IO.monoNanosNow
     let overallTime := (Float.ofNat <| t2 - t1) / 1000000.0
 
