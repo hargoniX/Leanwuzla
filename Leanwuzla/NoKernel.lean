@@ -58,14 +58,10 @@ public def decideSmtNoKernel (type : Expr) (getModel : Bool) : SolverM UInt8 := 
       let aigSize := entry.aig.decls.size
       trace[Meta.Tactic.bv] s!"AIG has {aigSize} nodes."
 
-      let (cnf, map) ←
+      let cnf ←
         withTraceNode `sat (fun _ => return "Converting AIG to CNF") do
           -- lazyPure to prevent compiler lifting
-          IO.lazyPure (fun _ =>
-            let (entry, map) := entry.relabelNat'
-            let cnf := Std.Sat.AIG.toCNF entry
-            (cnf, map)
-          )
+          IO.lazyPure (fun _ => Std.Sat.AIG.toCNF entry)
 
       let res ←
         withTraceNode `sat (fun _ => return "Obtaining external proof certificate") do
@@ -84,7 +80,7 @@ public def decideSmtNoKernel (type : Expr) (getModel : Bool) : SolverM UInt8 := 
           logInfo "Error: Failed to check LRAT cert"
           return (1 : UInt8)
       | .error assignment =>
-        let equations := reconstructCounterExample map assignment aigSize atomsAssignment
+        let equations := reconstructCounterExample entry.aig assignment atomsAssignment
         reportCounterExample fvars getModel { goal := g, unusedHypotheses, equations }
   catch e =>
     -- TODO: improve handling of sat cases. This is a temporary workaround.
