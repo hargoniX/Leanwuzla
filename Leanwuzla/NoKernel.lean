@@ -44,12 +44,10 @@ public def decideSmtNoKernel (type : Expr) (getModel : Bool) : SolverM UInt8 := 
       let hypotheses ← Normalize.PreProcessM.getHyps
       -- Reflect the goal and, at the same time, record the atom assignment so
       -- that we can reconstruct a model if the query turns out to be sat.
-      let (bvExpr, atomsAssignment, unusedHypotheses) ← M.run (hypotheses := hypotheses) do
+      let (bvExpr, atomsAssignment, unusedHypotheses) ← ReifyM.run (hypotheses := hypotheses) (cfg := cfg) do
         let reflectionResult ← reflectBV g
-        let flipper := fun (expr, {width, atomNumber, synthetic}) =>
-          (atomNumber, (width, expr.expr, synthetic))
-        let atomsAssignment := Std.HashMap.ofList ((← getThe State).atoms.toList.map flipper)
-        return (reflectionResult.bvExpr, atomsAssignment, reflectionResult.unusedHypotheses)
+        let atomsAssignment ← ReifyM.atomsAssignmentMap
+        return (reflectionResult.satExpr.bvExpr, atomsAssignment, reflectionResult.unusedHypotheses)
 
       let entry ←
         withTraceNode `bv (fun _ => return "Bitblasting BVLogicalExpr to AIG") do
@@ -81,7 +79,9 @@ public def decideSmtNoKernel (type : Expr) (getModel : Bool) : SolverM UInt8 := 
           return (1 : UInt8)
       | .error assignment =>
         let equations := reconstructCounterExample entry.aig assignment atomsAssignment
-        reportCounterExample fvars getModel { goal := g, unusedHypotheses, equations }
+        let equations := equations.filterMap fun (lhs, synth, rhs) =>
+          if synth then none else some (lhs, rhs)
+        reportCounterExample fvars getModel { goal := g, unusedHypotheses, equations, functionAtoms := #[] }
   catch e =>
     -- TODO: improve handling of sat cases. This is a temporary workaround.
     let message ← e.toMessageData.toString

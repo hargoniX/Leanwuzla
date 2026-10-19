@@ -205,10 +205,10 @@ private axiom bitwuzlaCorrect (expr : BVLogicalExpr) : expr.Unsat
 def bitwuzlaCounterExample : String := "Bitwuzla found a counter example"
 def bitwuzlaSuccess : String := "Bitwuzla thinks it's right but can't trust the wuzla!"
 
-def bitwuzla (g : MVarId) (reflectionResult : ReflectionResult) (atomsAssignment : Std.HashMap Nat (Nat × Expr × Bool))
-    (solverPath : System.FilePath) (cfg : BVDecideConfig) :
-    MetaM (Except CounterExample (UnsatProver.Result Unit)) := do
-  let smt := toSMT reflectionResult.bvExpr atomsAssignment
+def bitwuzla (g : MVarId) (reflectionResult : ReflectionResult) (solverPath : System.FilePath)
+    (cfg : BVDecideConfig) : LemmaM (Except CounterExample Unit) := do
+  let bvExpr := reflectionResult.satExpr.bvExpr
+  let smt := toSMT bvExpr (← ReifyM.atomsAssignmentMap)
   trace[Meta.Tactic.bv] s!"Encoded as SMT: {smt}"
   let res ←
     IO.FS.withTempFile fun handle path => do
@@ -217,22 +217,29 @@ def bitwuzla (g : MVarId) (reflectionResult : ReflectionResult) (atomsAssignment
       withTraceNode `bv (fun _ => return "Proving with bitwuzla") do
         smtQuery solverPath path cfg.timeout
   match res with
-  | .sat .. => return .error ⟨g, {}, #[]⟩
-  | .unsat => return .ok ⟨mkApp (mkConst ``bitwuzlaCorrect) (toExpr reflectionResult.bvExpr), ()⟩
+  | .sat .. =>
+    return .error {
+      goal := g,
+      unusedHypotheses := reflectionResult.unusedHypotheses,
+      equations := #[],
+      functionAtoms := #[]
+    }
+  | .unsat =>
+    let proof := mkApp (mkConst ``bitwuzlaCorrect) reflectionResult.satExpr.expr
+    g.assign (← reflectionResult.satExpr.proveFalse proof)
+    return .ok ()
 
 def bvBitwuzla (g : MVarId) (solverPath : System.FilePath) (cfg : BVDecideConfig) :
     MetaM (Except CounterExample Unit) := do
   Grind.GrindM.run (params := ← Grind.mkDefaultParams {}) do
     Normalize.PreProcessM.run' (.new (.solve none) cfg) (.mvarIdTarget g) do
       if ← Normalize.bvNormalize then return .ok ()
-      let unsatProver : UnsatProver Unit := fun g reflectionResult atomsAssignment => do
+      let unsatProver : UnsatProver Unit := fun g reflectionResult => do
         withTraceNode `bv (fun _ => return "Preparing LRAT reflection term") do
-          bitwuzla g reflectionResult atomsAssignment solverPath cfg
+          bitwuzla g reflectionResult solverPath cfg
       let goal ← Normalize.PreProcessM.getTargetMVarId
-      M.run (hypotheses := ← Normalize.PreProcessM.getHyps) do
-        match ← closeWithBVReflection goal unsatProver with
-        | .ok .. => return .ok ()
-        | .error err => return .error err
+      ReifyM.run (hypotheses := ← Normalize.PreProcessM.getHyps) (cfg := cfg) do
+        closeWithBVReflection goal unsatProver
 
 @[tactic bvBitwuzla]
 def evalBvBitwuzla : Tactic := fun
